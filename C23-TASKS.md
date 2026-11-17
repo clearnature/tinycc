@@ -363,7 +363,7 @@
 
 ### T5.1–T5.5 GNU 内建有界子集
 
-- 状态：**T5.1、T5.2 完成**（2026-11-17）；T5.3–T5.5 待做
+- 状态：**T5.1–T5.3 完成**（2026-11-17）；T5.4、T5.5 待做
 - 范围来源：`C23-SUPPORT.md` §6.1 的实测（15 个常见 `__builtin_*` 里 tcc 只有 6 个是真内建，其余 9 个是隐式声明 → 链接期 `unresolved reference`）
 - **T5.1 `__builtin_bswap16/32/64`：完成**
   - 落点：`tcctok.h`（4 条 `DEF`）+ `tccgen.c` 的 `unary()` 里 `case TOK_builtin_bswap16/32/64`
@@ -377,11 +377,18 @@
   - 落点：同上，`case TOK_builtin_prefetch`
   - 实现：`next(); skip('(');` → 0 个实参报 `too few arguments to function '__builtin_prefetch'`（与 gcc 对齐，gcc 也拒 0 个）→ 逐个 `expr_eq()` + `vpop()` → 结果压 `VT_VOID`
   - 与 gcc 的实测一致点：1/2/3/4 个实参都接受（gcc 的它多给也不报）；实参只求值一次；可作为逗号表达式的左操作数
-- **T5.3 `__builtin_object_size` / `__builtin_assume_aligned`：待做**（返回保守值：`(size_t)-1` / 原样返回指针）
+- **T5.3 `__builtin_object_size` / `__builtin_assume_aligned`：完成**
+  - 落点：`tcctok.h`（2 条 `DEF`）+ `tccgen.c` 的两个 case
+  - `object_size`：`nocode_wanted++` 下解析实参再 `vpop()`（**实参不求值**，与 gcc 一致：`__builtin_object_size(counted(),0)` 后 `calls` 仍为 0）；第二实参走 `expr_const64()`，越界报 `last argument of '__builtin_object_size' is not integer constant between 0 and 3`；结果 `vpushll` + `gen_cast_s(VT_SIZE_T)`
+  - 精确值的唯一形状：**直接命名整个数组** —— 判据是 `vtop->sym` 存在、`sym->type` 与 `vtop->type` 的 `t`/`ref` 完全一致、且 `type.t & VT_ARRAY` 且元素个数已知。局部 `char buf[10]` → 10（四档一致）、全局 `static char[7]` → 7。其余形状（`buf+2`、`(char*)buf`、`&i`、结构体成员）给 `(size_t)-1`（0/1 档）或 `0`（2/3 档）
+  - **为什么只做这一种形状**：`vtop->sym` 在成员访问后仍指向**外层对象**，所以 `s.arr`/`s.tail` 拿不到"到外层对象末尾"的字节数（gcc 给 `S.arr` → 20、`S.tail` → 8，都是到 struct 末尾）。给错的具体数字比给"未知"更危险：`-D_FORTIFY_SOURCE` 的 `__memcpy_chk` 正是靠 `(size_t)-1` 表示"不要检查"
+  - `assume_aligned`：返回指针本身并转成 `void *`（`sizeof` 与 gcc 一致为 8）；对齐与可选偏移实参照常求值后丢弃；0/1 个实参报 `too few arguments`
+  - 证据：与 gcc 差分（`sizeof`、四档数组、全局数组、指针形参、不求值、返回同一指针、三实参形式）逐行一致；四后端交叉编译 0 个未定义 `__builtin_*`；x86_64 与 i386 freestanding 运行期退出码 0
+  - **与 gcc 的差异（双向）**：① gcc 能做真正的对象大小分析，tcc 对非"整数组"形状一律保守；② 反方向上 tcc 更宽松 —— gcc 认为 `__builtin_object_size` 不是 ICE，`static_assert`/`enum` 里用会报 `expression in static assertion is not constant`，tcc 接受（数组维度两边都接受）
 - **T5.4 `__builtin_popcount/clz/ctz`：待做**（前端"移位+掩码"或查表即可）
 - **T5.5 `__builtin_add_overflow` 系列：待做**（需进位/溢出标志，属后端工作，M）
 - 明确不做：`__builtin_shufflevector` / `__builtin_convertvector`（要求向量类型，tcc 没有）
-- 用例：`179_c23_gnu_builtins`（`.expect` 由 gcc 生成，覆盖 `sizeof`、值矩阵、单次求值、`prefetch` 的 `void` 语义与求值次数）
+- 用例：`179_c23_gnu_builtins`（bswap/prefetch）、`180_c23_builtin_object_size`（object_size/assume_aligned），两份 `.expect` 均由 gcc 生成
 
 
 ---

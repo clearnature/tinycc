@@ -217,9 +217,11 @@ tcc 的 `tests2` 已经具备本文需要的一切：
 |---|---|---|
 | `__builtin_bswap16/32/64` | **已完成** | 纯前端实现（`tccgen.c` 的 `TOK_builtin_bswap*`）：`parse_builtin_params(0,"e")` 取值 → `gen_cast` 到无符号容器 → `gv_dup()` 复制 → 逐字节 `& mask` + 移位 + `|` → 再 `gen_cast` 回窄类型。零后端改动。与 gcc 16.2 差分逐值一致（含 `sizeof` 为 2/4/8、位域/比较/窄化实参、`-1`、嵌套调用）；实参只求值一次 |
 | `__builtin_prefetch` | **已完成** | 求值并丢弃 1–3 个实参，结果类型 `void`。与 gcc 对齐：0 个实参报 `too few arguments`（gcc 也拒），多给实参 gcc 与 tcc 都接受 |
-| `__builtin_object_size` / `__builtin_assume_aligned` | 待做 | 分析类，返回保守值即可（`object_size` 返回 `(size_t)-1` 一类，`assume_aligned` 原样返回指针），S |
+| `__builtin_object_size` / `__builtin_assume_aligned` | **已完成** | `object_size` 是编译期查询：实参**不求值**（`nocode_wanted++` 解析后弹出）；第二个实参必须是常量 0–3，否则报 `is not integer constant between 0 and 3`。直接命名的**整个数组**给精确值（局部 `char buf[10]` → 10、全局 `static char[7]` → 7，与 gcc 一致），其余形状给 gcc 的"未知对象"保守值：最大档（0/1）`(size_t)-1`、最小档（2/3）`0`。`assume_aligned` 返回指针本身（`void *`），对齐/偏移实参照常求值后丢弃 |
 | `__builtin_popcount/clz/ctz` | 待做 | 通用"移位+掩码"或查表实现即可前端化，S–M |
 | `__builtin_add_overflow` 系列 | 待做 | 需要进位/溢出标志，属后端工作，M |
+
+`object_size` 的已知差异（有意，且方向安全）：gcc 会做真正的对象大小分析，`s.arr`/`&i`/`buf+2`/`(char*)buf` 都能给出"到外层对象末尾"的字节数，tcc 一律返回保守值。只对"直接命名整个数组"给精确值，因为那是唯一能保证"整个对象 == 所求对象"的形状；给错的具体数字比给"未知"更危险（`-D_FORTIFY_SOURCE` 的 `__memcpy_chk` 依赖 `(size_t)-1` 表示"不要检查"）。另一个方向上的差异是 tcc **更宽松**：gcc 把 `__builtin_object_size` 视为非常量表达式，`static_assert`/`enum` 里用会报错，tcc 接受（因为它最终就是一个常量），数组维度写法两边都接受。
 
 两个已落地项的**代价**（有意接受，不是缺陷）：bswap 走前端掩码/移位/或，x86_64 上 `unsigned f32(unsigned x){return __builtin_bswap32(x);}` 生成约 19 条指令，而 gcc 后端直接发 1 条 `bswap`。tcc 的定位是"编译快、代码朴素"，且加后端快速路径需要给 5 个后端各加一个单目运算派发点（`gen_opi`/`gen_opl` 目前没有单目入口），已单列为后续项。行为正确性不受影响。
 

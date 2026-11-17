@@ -6163,6 +6163,70 @@ ST_FUNC void unary(void)
         type.t = VT_VOID;
         vpush(&type);
         break;
+    case TOK_builtin_object_size:
+    {
+        /* Compile-time query: the pointer is parsed but never evaluated
+           (gcc does the same), and the second argument has to be a
+           constant between 0 and 3 selecting the maximum (0, 1) or minimum
+           (2, 3) variant.  A whole array named directly is answered
+           exactly; everything else (arithmetic, element addresses, casts,
+           struct members -- gcc reports the bytes to the end of the
+           enclosing object there) would need a real object-size analysis
+           and gets the conservative answer gcc uses for an unknown object:
+           (size_t)-1 for the maximum variants and 0 for the minimum ones. */
+        int64_t kind;
+        long long size = -1;
+        int al;
+        next();
+        skip('(');
+        nocode_wanted++;
+        expr_eq();
+        /* the symbol's own type matches only when the argument names the
+           object itself, not a field of one (a field leaves the symbol
+           pointing at the enclosing object) */
+        if (vtop->sym && vtop->sym->type.t == vtop->type.t
+            && vtop->sym->type.ref == vtop->type.ref
+            && (vtop->type.t & VT_ARRAY)
+            && vtop->type.ref && vtop->type.ref->c >= 0)
+            size = type_size(&vtop->type, &al);
+        vpop();
+        nocode_wanted--;
+        skip(',');
+        kind = expr_const64();
+        skip(')');
+        if (kind < 0 || kind > 3)
+            tcc_error("last argument of '%s' is not integer constant "
+                      "between 0 and 3",
+                      get_tok_str(TOK_builtin_object_size, NULL));
+        if (size < 0)
+            size = kind < 2 ? -1 : 0;
+        vpushll(size);
+        gen_cast_s(VT_SIZE_T);
+        break;
+    }
+    case TOK_builtin_assume_aligned:
+        /* the pointer is the result; the alignment and optional offset are
+           hints for an optimizer, and tcc has none */
+        next();
+        skip('(');
+        expr_eq();
+        if (tok != ',')
+            tcc_error("too few arguments to function '%s'",
+                      get_tok_str(TOK_builtin_assume_aligned, NULL));
+        next();
+        expr_eq();
+        vpop();
+        if (tok == ',') {
+            next();
+            expr_eq();
+            vpop();
+        }
+        skip(')');
+        type.ref = NULL;
+        type.t = 0;
+        mk_pointer(&type);
+        gen_assign_cast(&type);
+        break;
     case TOK_builtin_expect:
 	/* __builtin_expect is a no-op for now */
 	parse_builtin_params(0, "ee");

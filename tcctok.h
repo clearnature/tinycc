@@ -193,6 +193,8 @@
      DEF(TOK_builtin_bswap32, "__builtin_bswap32")
      DEF(TOK_builtin_bswap64, "__builtin_bswap64")
      DEF(TOK_builtin_prefetch, "__builtin_prefetch")
+     DEF(TOK_builtin_object_size, "__builtin_object_size")
+     DEF(TOK_builtin_assume_aligned, "__builtin_assume_aligned")
      /*DEF(TOK_builtin_va_list, "__builtin_va_list")*/
 #if defined TCC_TARGET_PE && defined TCC_TARGET_X86_64
      DEF(TOK_builtin_va_start, "__builtin_va_start")
