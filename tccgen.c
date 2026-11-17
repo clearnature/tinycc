@@ -4055,6 +4055,9 @@ static void parse_std_attribute(AttributeDef *ad)
         }
         else if (0 == strcmp(get_tok_str(t, NULL), "maybe_unused"))
             ; /* accepted, no analysis behind it yet */
+        else if (0 == strcmp(get_tok_str(t, NULL), "unsequenced")
+              || 0 == strcmp(get_tok_str(t, NULL), "reproducible"))
+            ; /* C23 optimization hints; tcc has no optimizer to feed */
         else
             tcc_error("unknown attribute '%s'", get_tok_str(t, NULL));
         if (tok == '(') {
@@ -5918,12 +5921,18 @@ ST_FUNC void unary(void)
         break;
     case TOK_NULLPTR:
         /* C23: nullptr has type nullptr_t, which gcc models as void *.
-           tcc has no such type, and forcing VT_PTR here crashes codegen
-           because a pointer type without a Sym for the pointed-to type is
-           not representable.  Emit the null pointer constant 0 instead:
-           assignment to and comparison with any pointer then work through
-           the ordinary rule.  Known deviation: sizeof(nullptr) is 4. */
+           A real pointer value is used rather than the integer constant 0 so
+           that sizeof(nullptr) is the pointer size and pointer comparisons
+           pick the pointer path; mk_pointer() gives the pointed-to type its
+           Sym, which is what made an earlier attempt at a bare VT_PTR crash. */
         vpushi(0);
+        {
+            CType np;
+            np.ref = NULL;
+            np.t = 0;
+            mk_pointer(&np);
+            gen_cast(&np);
+        }
         next();
         break;
     case TOK_CUINT:
