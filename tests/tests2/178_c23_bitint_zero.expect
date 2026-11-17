@@ -1,0 +1,1 @@
+178_c23_bitint_zero.c:1: error: '_BitInt' argument '0' is not a positive integer constant expression

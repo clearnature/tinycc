@@ -195,6 +195,7 @@ tcc 的 `tests2` 已经具备本文需要的一切：
 | GNU 扩展长尾（`__builtin_shufflevector`、`__builtin_convertvector` 等） | 属于"对标 gcc 扩展集"，比 C23 本身更大，单独立项 |
 | C23 库设施（`stdbit.h`、`<stdckdint.h>` 等的完整实现） | 主要是头文件工作，可由 `include/` 提供，不算编译器特性；但 `__builtin_*` 依赖要单列 |
 | gcc 级 conformance 测试矩阵 | 需要独立工程；本文只做"真实代码覆盖 + 与 gcc 差分" |
+| `_BitInt(N)` 的 `N > 64` | 实现需要新的类型表示 + 各后端 ABI 改造；tcc 在解析期显式报错（`the maximum width is 64`），gcc 支持更宽 |
 
 ---
 

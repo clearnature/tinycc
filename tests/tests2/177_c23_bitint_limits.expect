@@ -1,0 +1,1 @@
+177_c23_bitint_limits.c:7: error: bit-precise integer type '_BitInt(65)' is not supported: the maximum width is 64

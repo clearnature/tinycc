@@ -348,7 +348,13 @@
   - 运行期：本机无 qemu-user，但 `i386` 二进制可在 x86_64 内核原生执行；用 `-nostdlib` + `int $0x80` exit 的 freestanding 程序实测，计算结果 `-16682 & 0x7f = 86`，**实际退出码 86**，与 x86_64 侧同一程序的语义一致
   - **T4.4 抓到的真 bug（已修）**：`bitint_narrow()` 最初直接 `vtop->type.t = VT_LLONG` 再移位，在 32 位后端（i386/arm）上崩溃——先是 `free(): invalid next size`（堆损坏，64 位值需要寄存器对 `r2` 而直接改类型没分配），改成 `gen_cast` 后又变成 `memory full (vstack)`（`gen_cast` 内部经 `gen_op` 回到 `bitint_narrow`，无界递归）。最终修法：用 `gen_cast` 做宽度转换 + `in_narrow` 静态重入保护
   - 教训：**跨后端验证不能只看 x86_64**。这条 bug 在 x86_64 上完全看不出来（`make test` 全绿），只有 `make cross-i386` 才暴露
-- T4.5 ABI：`N > 64` 的参数/返回值/对齐，与 gcc 编译对象互链
+- **T4.5 状态：完成（按"显式诊断"方案收口，不做多字整数）**
+  - 决定：`N > 64` 一律在**解析期报错**，不做多字整数实现。理由：`CType.t` 的位宽字段只有 6 位（bit20–25），存不下 >64；真正实现需要新的类型表示 + 全部后端的 ABI 改造，属于数量级更大的独立工程。显式报错好过静默截断
+  - 文案（本轮改为点名位宽与上限）：`bit-precise integer type '_BitInt(65)' is not supported: the maximum width is 64`
+  - 边界矩阵（实测）：`65`/`128`/`1000`/`unsigned 65` 全部报上句；`64` 与 `unsigned 64` 通过；`0`、`-5` 报 `'_BitInt' argument '0' is not a positive integer constant expression`；非常量 N 报 `constant expression expected`（tcc 的常量表达式门）；`typedef _BitInt(8) b8;` 后可正常使用
+  - **与 gcc 的差异**：gcc 支持 >64 位宽（无诊断），tcc 报错；差异明确写在文案里
+  - 未做（明确排除）：`N > 64` 的多字整数与 ABI、`_BitInt` 的 `-Woverflow` 类告警
+  - 用例：`177_c23_bitint_limits`（>64）、`178_c23_bitint_zero`（N=0），`.expect` 手写（tcc 只报首个错误，故拆两个文件）
 
 ---
 

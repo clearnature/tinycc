@@ -5014,8 +5014,8 @@ static int parse_btype(CType *type, AttributeDef *ad, int ignore_label)
             if (!uns && n < 2)
                 tcc_error("'signed _BitInt' argument must be at least 2");
             if (n > 64)
-                tcc_error("bit-precise integer type with more than 64 bits"
-                          " is not supported");
+                tcc_error("bit-precise integer type '_BitInt(%d)' is not"
+                          " supported: the maximum width is 64", n);
             u = n <= 8 ? VT_BYTE : n <= 16 ? VT_SHORT
               : n <= 32 ? VT_INT : VT_LLONG;
             if (bt != -1 || st != -1)
