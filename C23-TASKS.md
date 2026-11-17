@@ -343,7 +343,11 @@
   - **停止条件**：若 T4.2.8/T4.2.9 使既有 173 个用例出现回归且两轮内定位不到根因，回退到 T4.1 的容器语义（保留 P0/P1 的截断改进），并把差异重新写入本文档，不硬推
   - **为什么本轮没做**：②③ 直接改核心算术路径，影响全部后端与全部既有测试；一次做错就是全库回归（此前 `auto` 的 macro 重放路线曾把编译器挂死、`nodiscard` 首版曾破坏自举）。应由独立一轮实施并在每步之后跑自举门禁
 - T4.3 单后端（x86_64）验收：`sizeof(_BitInt(8))==1`、范围截断、与 gcc 差分算术
-- T4.4 其余后端：`make cross-<target>` + QEMU 运行，逐个后端过 smoke
+- **T4.4 状态：完成（交叉编译四后端全通过 + i386 运行期实测）**
+  - 交叉编译矩阵（`make cross-<t>` + `-B. -c`，`file` 验机器类型）：`i386`→Intel i386 ELF32、`arm`→ARM EABI5、`arm64`→AArch64 ELF64、`riscv64`→UCB RISC-V —— **全部 OK**
+  - 运行期：本机无 qemu-user，但 `i386` 二进制可在 x86_64 内核原生执行；用 `-nostdlib` + `int $0x80` exit 的 freestanding 程序实测，计算结果 `-16682 & 0x7f = 86`，**实际退出码 86**，与 x86_64 侧同一程序的语义一致
+  - **T4.4 抓到的真 bug（已修）**：`bitint_narrow()` 最初直接 `vtop->type.t = VT_LLONG` 再移位，在 32 位后端（i386/arm）上崩溃——先是 `free(): invalid next size`（堆损坏，64 位值需要寄存器对 `r2` 而直接改类型没分配），改成 `gen_cast` 后又变成 `memory full (vstack)`（`gen_cast` 内部经 `gen_op` 回到 `bitint_narrow`，无界递归）。最终修法：用 `gen_cast` 做宽度转换 + `in_narrow` 静态重入保护
+  - 教训：**跨后端验证不能只看 x86_64**。这条 bug 在 x86_64 上完全看不出来（`make test` 全绿），只有 `make cross-i386` 才暴露
 - T4.5 ABI：`N > 64` 的参数/返回值/对齐，与 gcc 编译对象互链
 
 ---

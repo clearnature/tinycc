@@ -3305,21 +3305,34 @@ static void gen_cast_s(int t)
 static void bitint_narrow(void)
 {
     int w, uns, ctype, sh;
+    CType wide, narrow;
+    static int in_narrow;
 
-    if (!IS_BITINT(vtop->type.t))
+    /* gen_cast and gen_op below reenter here (the widening cast itself runs
+       through gen_op), so guard against unbounded recursion. */
+    if (in_narrow || !IS_BITINT(vtop->type.t))
         return;
     w = BITINT_WIDTH(vtop->type.t);
     if (w >= 64)
         return;
+    in_narrow = 1;
     uns = (vtop->type.t & VT_UNSIGNED) != 0;
     ctype = vtop->type.t & VT_BTYPE;
     sh = 64 - w;
-    vtop->type.t = VT_LLONG | (uns ? VT_UNSIGNED : 0);
+    /* Go through gen_cast rather than poking type.t: on the 32-bit targets a
+       VT_LLONG value needs a register pair (r2), and setting the type by hand
+       leaves that unallocated, which corrupts the vstack there. */
+    wide.t = VT_LLONG | (uns ? VT_UNSIGNED : 0);
+    wide.ref = NULL;
+    gen_cast(&wide);
     vpushi(sh);
     gen_op(TOK_SHL);
     vpushi(sh);
     gen_op(uns ? TOK_SHR : TOK_SAR);
-    vtop->type.t = ctype | (uns ? VT_UNSIGNED : 0);
+    narrow.t = ctype | (uns ? VT_UNSIGNED : 0);
+    narrow.ref = NULL;
+    gen_cast(&narrow);
+    in_narrow = 0;
 }
 
 static void gen_cast(CType *type)
