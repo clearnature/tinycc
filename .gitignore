@@ -68,3 +68,8 @@ tests/vla_test
 tests/hello
 tests/tests2/fred.txt
 libtcc.dylib
+
+# Local scratch: probe programs, build and test logs, and the evidence kept
+# while working on the C23 support (see C23-TASKS.md).  Nothing in here is
+# part of the compiler, and some of it is regenerated on every run.
+.bench/
