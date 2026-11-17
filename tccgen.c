@@ -4026,11 +4026,67 @@ ST_FUNC int exact_log2p1(int i)
   return ret;
 }
 
+/* Skip a parenthesised argument such as in deprecated("msg") or
+   gnu::aligned(8) when the attribute itself does not need it. */
+static void skip_attribute_args(void)
+{
+    int par = 0;
+
+    if (tok != '(')
+        return;
+    do {
+        if (tok == '(')
+            ++par;
+        else if (tok == ')')
+            --par;
+        next();
+    } while (par > 0);
+}
+
+/* The GNU attributes that can be written as a scoped C23 attribute, i.e.
+   [[gnu::name]].  Only names tcc actually implements are listed: quiet
+   support for one it ignores would be worse than saying it is unsupported. */
+static void parse_one_gnu_attribute(int t, AttributeDef *ad);
+static const struct { const char *name; int tok; } gnu_attribute_names[] = {
+    { "packed",        TOK_PACKED1 },
+    { "aligned",       TOK_ALIGNED1 },
+    { "weak",          TOK_WEAK1 },
+    { "alias",         TOK_ALIAS1 },
+    { "section",       TOK_SECTION1 },
+    { "used",          TOK_USED1 },
+    { "unused",        TOK_UNUSED1 },
+    { "format",        TOK_FORMAT1 },
+    { "nodebug",       TOK_NODEBUG1 },
+    { "always_inline", TOK_ALWAYS_INLINE1 },
+    { "noinline",      TOK_NOINLINE },
+    { "pure",          TOK_PURE1 },
+    { "visibility",    TOK_VISIBILITY1 },
+    { "cleanup",       TOK_CLEANUP1 },
+    { "constructor",   TOK_CONSTRUCTOR1 },
+    { "destructor",    TOK_DESTRUCTOR1 },
+    { "noreturn",      TOK_NORETURN1 },
+    { "mode",          TOK_MODE },
+    { NULL, 0 }
+};
+
+/* Is this a GNU attribute that tcc implements?  Used by __has_c_attribute
+   for the scoped form: gcc answers 1 for a vendor attribute it supports
+   (the year-month value is only for standard attributes). */
+ST_FUNC int tcc_gnu_attribute_known(const char *name)
+{
+    int i;
+    for (i = 0; gnu_attribute_names[i].name; i++)
+        if (0 == strcmp(name, gnu_attribute_names[i].name))
+            return 1;
+    return 0;
+}
+
 /* Parse the inside of a C23 [[...]] attribute specifier.  Attribute names
    are only recognised where parse_attribute() is called, which is what
    makes "[[" distinguishable from a subscript; the lexer cannot tell, as
-   a[b[0]] is legal.  Only noreturn has an effect, the rest are accepted
-   and ignored because tcc has no analysis behind them. */
+   a[b[0]] is legal.  The standard attributes are applied, an unknown name is
+   reported as a warning, and a scoped name ([[gnu::packed]]) goes through
+   the same code that handles __attribute__((packed)). */
 static void parse_std_attribute(AttributeDef *ad)
 {
     AttributeDef ad_tmp;
@@ -4043,7 +4099,41 @@ static void parse_std_attribute(AttributeDef *ad)
             expect("attribute name");
         t = tok;
         next();
-        if (0 == strcmp(get_tok_str(t, NULL), "noreturn"))
+        if (tok == ':') {
+            /* scoped, as in [[gnu::packed]] */
+            char scope[64];
+            const char *name;
+            int i, applied = 0;
+
+            pstrcpy(scope, sizeof scope, get_tok_str(t, NULL));
+            next();
+            if (tok != ':')
+                expect("'::'");
+            next();
+            if (tok < TOK_IDENT)
+                expect("attribute name");
+            name = get_tok_str(tok, NULL);
+            next();
+            if (0 == strcmp(scope, "gnu")) {
+                for (i = 0; gnu_attribute_names[i].name; i++) {
+                    if (0 == strcmp(name, gnu_attribute_names[i].name)) {
+                        parse_one_gnu_attribute(gnu_attribute_names[i].tok, ad);
+                        applied = 1;
+                        break;
+                    }
+                }
+            }
+            if (!applied) {
+                /* gcc distinguishes the two wordings, and so do we */
+                if (0 == strcmp(scope, "gnu"))
+                    tcc_warning("'gnu::%s' scoped attribute directive ignored",
+                                name);
+                else
+                    tcc_warning("'%s::%s' scoped attribute directive ignored",
+                                scope, name);
+                skip_attribute_args();
+            }
+        } else if (0 == strcmp(get_tok_str(t, NULL), "noreturn"))
             ad->f.func_noreturn = 1;
         else if (0 == strcmp(get_tok_str(t, NULL), "nodiscard"))
             ad->f.func_nodiscard = 1;
@@ -4061,18 +4151,16 @@ static void parse_std_attribute(AttributeDef *ad)
         else if (0 == strcmp(get_tok_str(t, NULL), "unsequenced")
               || 0 == strcmp(get_tok_str(t, NULL), "reproducible"))
             ; /* C23 optimization hints; tcc has no optimizer to feed */
-        else
-            tcc_error("unknown attribute '%s'", get_tok_str(t, NULL));
+        else {
+            /* gcc warns here; erroring would reject headers that carry an
+               attribute this compiler does not know */
+            tcc_warning("'%s' attribute directive ignored",
+                        get_tok_str(t, NULL));
+            skip_attribute_args();
+        }
         if (tok == '(') {
             /* skip a parenthesised argument, as in deprecated("msg") */
-            int par = 0;
-            do {
-                if (tok == '(')
-                    ++par;
-                else if (tok == ')')
-                    --par;
-                next();
-            } while (par > 0);
+            skip_attribute_args();
         }
         if (tok == ',')
             next();
@@ -4083,38 +4171,14 @@ static void parse_std_attribute(AttributeDef *ad)
     skip(']');
 }
 
-static void parse_attribute(AttributeDef *ad)
+/* one __attribute__((...)) entry, factored out so that the gnu:: scope of
+   a C23 [[gnu::name]] attribute is handled by the same code */
+static void parse_one_gnu_attribute(int t, AttributeDef *ad)
 {
-    int t, n;
+    int n;
     char *astr;
-    AttributeDef ad_tmp;
 
-redo:
-    if (tok == '[') {
-        /* only "[[" starts an attribute; a single '[' is an array bound */
-        next();
-        if (tok != '[') {
-            unget_tok('[');
-            return;
-        }
-        next(); /* step past the second '[' */
-        parse_std_attribute(ad);
-        goto redo;
-    }
-    if (tok != TOK_ATTRIBUTE1 && tok != TOK_ATTRIBUTE2)
-        return;
-    if (NULL == ad) /* skip over / ignore attributes */
-        ad = &ad_tmp;
-
-    next();
-    skip('(');
-    skip('(');
-    while (tok != ')') {
-        if (tok < TOK_IDENT)
-            expect("attribute name");
-        t = tok;
-        next();
-        switch(t) {
+    switch(t) {
 	case TOK_CLEANUP1:
 	case TOK_CLEANUP2:
 	{
@@ -4315,6 +4379,39 @@ skip_param:
             }
             break;
         }
+}
+
+static void parse_attribute(AttributeDef *ad)
+{
+    int t;
+    AttributeDef ad_tmp;
+
+redo:
+    if (tok == '[') {
+        /* only "[[" starts an attribute; a single '[' is an array bound */
+        next();
+        if (tok != '[') {
+            unget_tok('[');
+            return;
+        }
+        next(); /* step past the second '[' */
+        parse_std_attribute(ad);
+        goto redo;
+    }
+    if (tok != TOK_ATTRIBUTE1 && tok != TOK_ATTRIBUTE2)
+        return;
+    if (NULL == ad) /* skip over / ignore attributes */
+        ad = &ad_tmp;
+
+    next();
+    skip('(');
+    skip('(');
+    while (tok != ')') {
+        if (tok < TOK_IDENT)
+            expect("attribute name");
+        t = tok;
+        next();
+        parse_one_gnu_attribute(t, ad);
         if (tok != ',')
             break;
         next();
@@ -6037,11 +6134,16 @@ ST_FUNC void unary(void)
         skip('(');
         t = tok;
         next();
-        if (tok == ':') {           /* scoped name: no vendor is implemented */
+        if (tok == ':') {
+            /* scoped name: answer 1 for a vendor attribute this compiler
+               implements, 0 otherwise.  gcc reserves the year-month value
+               for the standard attributes. */
+            const char *name;
+            next();             /* the second ':' */
+            skip(':');          /* now tok is the attribute name */
+            name = get_tok_str(tok, NULL);
             next();
-            skip(':');
-            next();
-            vpushi(0);
+            vpushi(tcc_gnu_attribute_known(name) ? 1 : 0);
         } else {
             vpushi(tcc_c_attribute_value(t));
         }

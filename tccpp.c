@@ -1527,16 +1527,19 @@ static int parse_has_c_attribute(void)
     t = tok;
     next();
     if (tok == ':') {
-        /* scoped attribute, as in vendor::name: only the vendor prefix is
-           known to the parser, and no scoped attribute is implemented */
+        /* scoped attribute, as in gnu::packed.  A vendor attribute that this
+           compiler implements answers 1 (not a year-month value, which is
+           reserved for the standard attributes), anything else answers 0. */
+        const char *name;
         next();
         if (tok != ':')
             expect("'::'");
         next();
         if (tok < TOK_IDENT)
             expect("attribute name");
+        name = get_tok_str(tok, NULL);
         next();
-        c = 0;
+        c = tcc_gnu_attribute_known(name) ? 1 : 0;
     } else {
         c = tcc_c_attribute_value(t);
     }

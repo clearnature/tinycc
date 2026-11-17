@@ -36,8 +36,10 @@ CASES = [
  ("attr: [[unsequenced]]", '[[unsequenced]] int f(int x){return x;} int main(void){return f(1)-1;}\n'),
  ("attr: [[reproducible]]", '[[reproducible]] int f(void){return 0;} int main(void){return f();}\n'),
  ("attr: on a label", 'int main(void){ [[maybe_unused]] lbl: return 0; }\n'),
- ("attr: unknown attribute is an error", '[[no_such_attr]] int x; int main(void){return 0;}\n'),
- ("attr: vendor scope is an error", '[[gnu::packed]] struct S{char c;int i;}; int main(void){return 0;}\n'),
+ ("attr: unknown attribute warns", '[[no_such_attr]] int x; int main(void){return 0;}\n'),
+ ("attr: gnu scope applied", '#include <stdio.h>\nstruct [[gnu::packed]] S{char c;int i;};\nint main(void){printf("%d\\n",(int)sizeof(struct S));return 0;}\n'),
+ ("attr: gnu scope unknown warns", '[[gnu::no_such(1)]] int y; int main(void){return 0;}\n'),
+ ("has_c_attribute gnu:: is 1", 'int main(void){return __has_c_attribute(gnu::packed) == 1 ? 0 : 1;}\n'),
  ("has_c_attribute value", '#if __has_c_attribute(deprecated) != 202311\n#error wrong\n#endif\nint main(void){return 0;}\n'),
  ("has_c_attribute unknown is 0", '#if __has_c_attribute(bogus)\n#error wrong\n#endif\nint main(void){return 0;}\n'),
 

@@ -1427,6 +1427,7 @@ ST_FUNC void skip(int c);
 ST_FUNC NORETURN void expect(const char *msg);
 ST_FUNC void pp_error(CString *cs);
 ST_FUNC int tcc_c_attribute_value(int tok);
+ST_FUNC int tcc_gnu_attribute_known(const char *name);
 
 
 /* space excluding newline */
