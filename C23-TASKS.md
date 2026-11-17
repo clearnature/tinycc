@@ -145,16 +145,24 @@
 
 ### T1.4 `__VA_OPT__`
 
-- 落点：`tccpp.c` 宏展开
-- gcc 参照：`libcpp/macro.cc:94` 起
-- 验收：空参数/非空参数、与 `##` 组合、嵌套必须报错；与 gcc 差分输出一致
+- 状态：**已完成（有一处已知缺口）**
+- 落点：`tcctok.h`（`TOK___VA_OPT__`）、`tccpp.c` 的 `macro_arg_subst()`（新增 `va_depth`）
+- 做法：遇到 `__VA_OPT__` 时找 `args` 里 `type.t` 非零的可变参数，`d[0] == TOK_EOF` 即空；空则整组跳过（按括号深度），非空则丢掉外层括号、让内部 token 走正常替换路径
+- 验收（已实测，与 gcc 逐行一致）：`__VA_OPT__(,)`（`LOG`/`OPT` 六个调用）、`__VA_OPT__("-%d")`、`__VA_OPT__("b")` 空参与非空参
+- 错误路径：宏无可变参数、缺 `(`、嵌套 → 均报错（嵌套文案与 gcc 不同，但同样拒绝）
+- **已知缺口**：`__VA_OPT__(##)` / `__VA_OPT__(x ##)` 应报错（gcc 报 `'##' cannot appear at either end`），tcc 目前接受。原因：带 `##` 的宏体先经 `macro_twosharps()` 处理，`##` 在那一步已被消化，`macro_arg_subst()` 里的两端检查看不到它
+- 用例：`163_c23_va_opt`（`.expect` 由 gcc 生成）
 
 ### T1.5 `#embed` + `__has_embed`
 
-- 落点：`tccpp.c`（指令分派 + 文件读取，复用现有 include 栈）
-- gcc 参照：`libcpp/directives.cc:1378-1444`（`do_embed`，正文 67 行）
-- 验收：真实二进制文件逐字节一致（`41424344` 级实测）；缺文件报错；`__has_embed` 至少返回 0/1 且不崩
-- 可选延后：`limit`/`prefix`/`suffix` 参数
+- 状态：**已完成（`__has_embed` 有意不定义）**
+- 落点：`tcctok.h`（`TOK_EMBED`）、`tccpp.c` 新增 `parse_embed()`、`preprocess()` 的 `case TOK_EMBED`、`is_known_directive()`
+- 做法：按 `""` include 的搜索顺序（当前文件目录 → include 路径）定位文件，用 `fopen/fgetc` 读原始字节，拼成 `65,66,...` 文本推进 `tcc_open_bf` 的内存缓冲；**必须同时把该缓冲压进 include 栈**（`*s1->include_stack_ptr++ = file->prev`），否则 EOF 会被当成整个输入结束
+- gcc 参照：`libcpp/directives.cc:1378-1444`（`do_embed`）
+- 验收（已实测）：`ABCD` → `41424344 size=4`；含 `00 FF 80` 的二进制逐字节一致；空文件贡献 0 个 token（`sizeof`=2 的对照用例）；缺文件与缺引号均报错
+- 有意不做：`__has_embed` 不定义——按 C23 推荐写法 `#if defined(__has_embed) && __has_embed(...)`，未定义时自然走保守分支，不会说谎
+- 未做（明确延后）：`limit`/`prefix`/`suffix` 参数
+- 用例：`164_c23_embed` + `164_c23_embed.bin`（`.expect` 由 gcc 生成）
 
 ### T2.1 `nullptr` + `nullptr_t`
 

@@ -892,6 +892,7 @@ static int is_known_directive(int tok)
     case TOK_ERROR:
     case TOK_WARNING:
     case TOK_PRAGMA:
+    case TOK_EMBED:
         return 1;
     }
     return 0;
@@ -1838,6 +1839,85 @@ ST_FUNC void tccpp_putfile(const char *filename)
     tcc_debug_newfile(tcc_state);
 }
 
+/* C23 #embed: read the named file and replace the directive with the bytes
+   of the file as a comma separated list of integer constants.  The file is
+   searched like a "" include, i.e. the including file's directory first,
+   then the include paths.  The bytes are pushed as a nested input buffer so
+   that they are lexed as ordinary tokens. */
+static void parse_embed(TCCState *s1)
+{
+    char name[1024], buf[1024], *p;
+    int c, i, ch;
+    FILE *f;
+    CString cs;
+
+    next_nomacro();
+    if (tok != TOK_PPSTR || (tokc.str.data[0] != '"'
+                             && tokc.str.data[0] != '<'))
+        tcc_error("'#embed' expects \"FILENAME\" or <FILENAME>");
+    c = tokc.str.data[0];
+    i = tokc.str.size - 1;
+    if (i < 3 || tokc.str.data[i - 1] != (c == '"' ? '"' : '>'))
+        tcc_error("'#embed' expects \"FILENAME\" or <FILENAME>");
+    pstrncpy(name, sizeof name, tokc.str.data + 1, i - 2);
+    next_nomacro();
+    skip_to_eol(1);
+
+    f = NULL;
+    for (i = 0;; ++i) {
+        if (i == 0) {
+            if (!IS_ABSPATH(name))
+                continue;
+            buf[0] = '\0';
+        } else if (i == 1) {
+            if (c != '"')
+                continue;
+            p = file->true_filename;
+            pstrncpy(buf, sizeof buf, p, tcc_basename(p) - p);
+        } else {
+            int j = i - 2, k = j - s1->nb_include_paths;
+            if (k < 0)
+                p = s1->include_paths[j];
+            else if (k < s1->nb_sysinclude_paths)
+                p = s1->sysinclude_paths[k];
+            else
+                tcc_error("embed file '%s' not found", name);
+            pstrcpy(buf, sizeof buf, p);
+            pstrcat(buf, sizeof buf, "/");
+        }
+        pstrcat(buf, sizeof buf, name);
+        if ((f = fopen(buf, "rb")) != NULL)
+            break;
+    }
+
+    /* Materialise the bytes as a nested input buffer holding the numbers.
+       tcc_open_bf() takes the length without a terminator and puts CH_EOB
+       right after it, and the lexer pops back to the outer file at EOF. */
+    cstr_new(&cs);
+    i = 0;
+    ch = fgetc(f);
+    while (ch != EOF) {
+        if (i++)
+            cstr_ccat(&cs, ',');
+        cstr_printf(&cs, "%d", ch);
+        ch = fgetc(f);
+    }
+    fclose(f);
+    if (i == 0) {
+        /* an empty file contributes no tokens at all */
+        cstr_free(&cs);
+        return;
+    }
+    tcc_open_bf(s1, ":embed:", cs.size);
+    memcpy(file->buffer, cs.data, cs.size);
+    cstr_free(&cs);
+    /* Register the nested buffer like #include does, otherwise the lexer
+       treats its EOF as end of the whole input instead of popping back. */
+    if (s1->include_stack_ptr >= s1->include_stack + INCLUDE_STACK_SIZE)
+        tcc_error("#embed recursion too deep");
+    *s1->include_stack_ptr++ = file->prev;
+}
+
 /* is_bof is true if first non space token at beginning of file */
 ST_FUNC void preprocess(int is_bof)
 {
@@ -2042,6 +2122,9 @@ ST_FUNC void preprocess(int is_bof)
         if (!pragma_parse(s1))
             goto ignore;
         break;
+    case TOK_EMBED:
+        parse_embed(s1);
+        goto the_end;
     case TOK_LINEFEED:
         goto the_end;
     default:
@@ -3109,7 +3192,7 @@ static int macro_subst(
    args (field d) and return allocated string */
 static int *macro_arg_subst(Sym **nested_list, const int *macro_str, Sym *args)
 {
-    int t, t0, t1, t2, n;
+    int t, t0, t1, t2, n, va_depth;
     const int *st;
     Sym *s;
     CValue cval;
@@ -3126,10 +3209,55 @@ static int *macro_arg_subst(Sym **nested_list, const int *macro_str, Sym *args)
 
     tok_str_new(&str);
     t0 = t1 = 0;
+    va_depth = 0;
     while(1) {
         TOK_GET(&t, &macro_str, &cval);
         if (!t)
             break;
+        if (t == TOK___VA_OPT__) {
+            /* C23 __VA_OPT__(content): keep content only when the variable
+               argument is not empty.  The parentheses themselves are
+               dropped, and nesting is tracked with va_depth. */
+            Sym *sa = args;
+            int depth;
+            while (sa && !sa->type.t)
+                sa = sa->prev;
+            if (!sa)
+                tcc_error("__VA_OPT__ in a macro without variable arguments");
+            do t = *macro_str++; while (t == ' ');
+            if (t != '(')
+                expect("'(' after __VA_OPT__");
+            if (sa->d[0] == TOK_EOF) {
+                /* empty: skip the whole group */
+                depth = 0;
+                for (;;) {
+                    TOK_GET(&t, &macro_str, &cval);
+                    if (!t)
+                        tcc_error("unterminated __VA_OPT__");
+                    if (t == '(')
+                        depth++;
+                    else if (t == ')' && depth-- == 0)
+                        break;
+                }
+            } else {
+                va_depth = 1;
+                /* '##' may not appear at either end of __VA_OPT__ */
+                n = 0;
+                while (macro_str[n] == ' ')
+                    ++n;
+                if (macro_str[n] == TOK_PPJOIN)
+                    tcc_error("'##' cannot appear at either end of __VA_OPT__");
+            }
+            continue;
+        }
+        if (va_depth && t == ')') {
+            if (t1 == TOK_PPJOIN)
+                tcc_error("'##' cannot appear at either end of __VA_OPT__");
+            if (--va_depth == 0)
+                continue; /* drop the closing parenthesis */
+        }
+        if (va_depth && t == '(')
+            ++va_depth;
         if (t == '#') {
             /* stringize */
             do t = *macro_str++; while (t == ' ');
