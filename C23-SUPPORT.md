@@ -197,6 +197,30 @@ tcc 的 `tests2` 已经具备本文需要的一切：
 | gcc 级 conformance 测试矩阵 | 需要独立工程；本文只做"真实代码覆盖 + 与 gcc 差分" |
 | `_BitInt(N)` 的 `N > 64` | 实现需要新的类型表示 + 各后端 ABI 改造；tcc 在解析期显式报错（`the maximum width is 64`），gcc 支持更宽 |
 
+### 6.1 五个排除项的评估（2026-11-17 实测）
+
+结论先行：**五项都不建议做**，但理由各不相同；其中真正的"痛点"不在这些里面，而在 GNU 内建函数（见 §6.2）。
+
+| 项 | 实测事实 | 结论 | 若要做的工作量 |
+|---|---|---|---|
+| `constexpr` **函数** | gcc 16.2 自己报 `'constexpr' requires an initialized data declaration`（`constexpr int sq(int){...}` 直接拒） | **不做**：对标 gcc 本就不含它，任何依赖它的代码在 gcc 16 下也编不过 | 需"编译期求值器"。tcc 有 `tcc_run`/`tcc_relocate`（libtcc 可在内存里执行），理论路径是"把调用在内存里跑出常量"，但要处理循环/递归上限/副作用禁令，属 M–L 独立工程 |
+| GNU 扩展长尾 | 实测 15 个常见 `__builtin_*`，tcc **只有 6 个是真内建**（`expect`/`unreachable`/`alloca`/`types_compatible_p`/`constant_p`/`choose_expr`）；其余 9 个是**隐式声明**（有 warning、链接时 `unresolved reference`）：`popcount`/`clz`/`ctz`/`bswap32`/`bswap64`/`prefetch`/`object_size`/`add_overflow`/`assume_aligned` | **只做有界子集**：`popcount`/`clz`/`ctz`/`bswap*`（S，各后端几十行）、`prefetch`（零代码）、`object_size`/`assume_aligned`（返回保守值，S）；**`shufflevector`/`convertvector` 不做**——它们要求向量类型，tcc 完全没有，属 XL | 有界子集约 S×6；真正长尾无界 |
+| C23 库设施 | glibc **2.43** 已带 `/usr/include/stdbit.h`，tcc 直接可用（`stdc_count_ones(7)`=3、`stdc_leading_zeros(1)`=31，与 gcc 逐值一致）；`stdckdint.h` 在 glibc 2.43 里**不存在**；tcc 自带 `stdatomic/stdalign/stdbool/stdnoreturn` | **基本不是编译器的事**：库设施由 libc 提供。可选补一份 `stdckdint.h` + `stdbit.h` 的兜底头（header-only，S），只在目标 libc 缺时生效 | S（纯头文件） |
+| gcc 级 conformance 矩阵 | 本机 gcc 源码 `gcc/testsuite/gcc.dg/` 里 **c2x/c23 相关 285 个**、整个目录 **7520 个** | **不做**：这些用例大量依赖 gcc 内部头、`dg-*` 指令与 gcc 私有扩展，无法直接移植；自建等价矩阵是月级工程。现有"tests2 + gcc 生成 `.expect` 的差分"以约 1% 成本覆盖实用需求 | 月级（XL） |
+| `_BitInt` `N > 64` | 位宽字段只有 6 位（bit20–25），存不下 >64；真要实现需：新的类型表示 + 多字运算（5 个后端）+ `>64` 位的参数/返回值 ABI + 大整数常量折叠 | **不做，改为解析期显式报错**（`'_BitInt(65)' is not supported: the maximum width is 64`）。与 gcc 的差异已在文案里写明 | XL（独立项目） |
+
+### 6.2 真正值得做的：GNU 内建的有界子集
+
+上面第 2 项里"9 个隐式声明"才是实际使用中最容易踩的坑——它们不会静默出错（tcc 有 implicit declaration warning，链接期 unresolved），但会让"看起来能编"的代码在链接时失败。建议按性价比排序：
+
+1. `__builtin_bswap16/32/64`（各后端一条 bswap 指令，S）
+2. `__builtin_prefetch`（编译成空操作，S）
+3. `__builtin_object_size` / `__builtin_assume_aligned`（分析类，返回保守值即可，S）
+4. `__builtin_popcount/clz/ctz`（可用"循环/查表"通用实现，也可各后端映射到原生指令，S–M）
+5. `__builtin_add_overflow` 系列（需进位标志，x86/arm 各 M）
+
+明确不做：`__builtin_shufflevector`、`__builtin_convertvector`（要求向量类型，tcc 无）。
+
 ---
 
 ## 7. 风险
