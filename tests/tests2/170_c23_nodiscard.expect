@@ -1,0 +1,2 @@
+170_c23_nodiscard.c:14: warning: ignoring return value of 'f' declared with attribute 'nodiscard'
+1

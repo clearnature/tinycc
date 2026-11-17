@@ -144,6 +144,13 @@ static int parse_btype(CType *type, AttributeDef *ad, int ignore_label);
 /* set by parse_btype() when a C23 'constexpr' specifier was seen, consumed
    by decl() right after the declarator is known */
 static int constexpr_seen;
+/* [[nodiscard]] support without touching vtop->sym: block() marks that the
+   value of the statement expression will be discarded, the call generation
+   notes a nodiscard callee whose result is the whole statement, and the
+   discard site warns unless the value was cast to void. */
+static int stmt_discard;
+static int pending_nodiscard;
+static const char *pending_nodiscard_name;
 static CType *type_decl(CType *type, AttributeDef *ad, int *v, int td);
 static void parse_expr_type(CType *type);
 static void init_putv(init_params *p, CType *type, unsigned long c);
@@ -6387,9 +6394,27 @@ special_math_val:
             SValue ret;
             Sym *sa;
             int nb_args, ret_nregs, ret_align, regsize, variadic;
+            const char *callee_name = NULL;
+            int callee_nodiscard = 0;
             TokenString *p, *p2;
 
             /* function call  */
+            /* the callee symbol is vtop->sym here (identifier backpointer);
+               keep its name for the nodiscard diagnostic, because
+               vtop->type.ref is only the anonymous parameter list */
+            {
+                Sym *callee = vtop->sym;
+                /* A function's own symbol keeps sym_scope in that union
+                   member, so FuncAttr lives on the parameter list instead,
+                   i.e. callee->type.ref.  Only functions have one. */
+                if (callee && (callee->type.t & VT_BTYPE) == VT_FUNC
+                    && callee->v) {
+                    callee_name = get_tok_str(callee->v & ~SYM_FIELD, NULL);
+                    if (callee->type.ref)
+                        callee_nodiscard =
+                            callee->type.ref->f.func_nodiscard;
+                }
+            }
             if ((vtop->type.t & VT_BTYPE) != VT_FUNC) {
                 /* pointer test (no array accepted) */
                 if ((vtop->type.t & (VT_BTYPE | VT_ARRAY)) == VT_PTR) {
@@ -6515,6 +6540,15 @@ special_math_val:
                 }
                 vsetc(&ret.type, ret.r, &ret.c);
                 vtop->r2 = ret.r2;
+                /* A nodiscard call whose result ends the statement is the
+                   case C23 wants diagnosed; '(void)' suppression happens at
+                   the discard site, where the cast has been applied. */
+                if (stmt_discard && tok == ';' && callee_nodiscard) {
+                    pending_nodiscard = 1;
+                    /* resolve the name now: the token id is not necessarily
+                       printable by the time the value is discarded */
+                    pending_nodiscard_name = tcc_strdup(callee_name);
+                }
 
                 /* handle packed struct return */
                 if (((s->type.t & VT_BTYPE) == VT_STRUCT) && ret_nregs) {
@@ -7689,7 +7723,20 @@ again:
                     vpop();
                     gexpr();
                 } else {
+                    int saved_discard = stmt_discard;
+                    stmt_discard = 1;
+                    pending_nodiscard = 0;
                     gexpr();
+                    stmt_discard = saved_discard;
+                    /* '(void)call()' is the idiom for discarding on purpose:
+                       the cast leaves a void value, so it is not reported */
+                    if (pending_nodiscard
+                        && (vtop->type.t & VT_BTYPE) != VT_VOID)
+                        tcc_warning("ignoring return value of '%s' declared"
+                                    " with attribute 'nodiscard'",
+                                    pending_nodiscard_name);
+                    pending_nodiscard = 0;
+                    pending_nodiscard_name = NULL;
                     vpop();
                 }
                 skip(';');

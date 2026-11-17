@@ -238,16 +238,22 @@
 
 ### T3.3 属性诊断语义
 
-- 状态：**部分完成** —— `deprecated` 已生效；`fallthrough` 已验收；`nodiscard` 只存了标志、**尚未诊断**
+- 状态：**完成**（`deprecated` 告警、`nodiscard` 告警、`fallthrough` 语句接受；仅"`fallthrough` 位置错误告警"未做）
 - 落点：`tcc.h`（`SymAttr.deprecated`、`FuncAttr.func_nodiscard`）、`tccgen.c` 的 `parse_std_attribute()`、`merge_symattr()`、`merge_funcattr()`、`decl()`、`primary()`
 - `deprecated`：引用符号时告警（`primary()` 的 `tok_identifier` 分支，`vtop->sym = s;` 之后），函数与变量都覆盖
 - 两处必须一起改，否则标志根本到不了符号：
   1. `parse_btype()` 开头 `memset(ad, 0, sizeof(AttributeDef))` 会擦掉"声明说明符之前的属性" → 新增 `adpre` 单独收集，`ad = adbase` 之后 `merge_attr(&ad, &adpre)`
   2. `merge_symattr()`/`merge_funcattr()` 是**逐字段复制**，新加的位不会自动带上 → 必须显式加 `sa->deprecated |= sa1->deprecated` / `fa->func_nodiscard = 1`
 - `fallthrough`：`[[fallthrough]];` 作为语句已被接受（属性 + 空声明），控制流与 gcc 一致（`f(1)` 得 3）。未做"位置错误告警"
-- **`nodiscard` 未做诊断的原因（实测踩到）**：最初在调用分支写 `vtop->sym = s`，再到语句丢弃点检查 `vtop->sym->f.func_nodiscard`。该做法**破坏自举**（`tcov.o` 段错误）并产生 `'(null)'` 告警——`vtop->sym` 本来就是"标识符回指"（源码注释：even without r&VT_SYM），在丢弃点它可能是变量符号，`f` 与 `c`/`sym_scope` 共用 union，读到的是垃圾。已回退。要做对需要在调用结果上带一个专用字段（SValue 无空闲字段）或引入"最外层表达式是调用"的判定，属独立改动
+- **`nodiscard` 已生效**，做法（踩过两次坑后定稿）：
+  1. `block()` 的丢弃路径置 `stmt_discard=1`（save/restore），调用分支在 `tok == ';'` 且被调函数带 nodiscard 时记 `pending_nodiscard` 与名字
+  2. 丢弃点再判 `(vtop->type.t & VT_BTYPE) != VT_VOID`——`(void)f();` 的 cast 已把类型变成 void，于是被正确抑制
+  3. **不要**把被调函数写进 `vtop->sym`：它是"标识符回指"，在丢弃点可能指向变量符号，`FuncAttr` 与 `c`/`sym_scope` 共用 union，会读到垃圾（实测破坏自举、`tcov.o` 段错误）
+  4. **函数符号自身没有 FuncAttr**：`external_sym()` 只复制 `s->a`，`FuncAttr` 挂在参数表 `callee->type.ref->f` 上。读 `callee->f` 恒为 0；读 `type.ref->f` 才正确
+  5. 名字要用 `s->v & ~SYM_FIELD`（符号名带 `SYM_FIELD` 标记），且需在调用现场 `tcc_strdup` 下来——token id 到丢弃点已不可打印
+  6. `VT_` 位不能用：`0x2000` 落在 `VT_TYPE` 掩码内（`VT_TYPE = ~(VT_STORAGE|VT_STRUCT_MASK)`），会污染类型比较
 - 验收（已实测）：`[[deprecated("…")]]` 函数/变量各触发一次警告，输出与 gcc 相同的 `1 2 7 3`，gcc 亦为 2 条 warning
-- 用例：`169_c23_deprecated_fallthrough`（`.expect` 手写，含两行诊断 + 程序输出）
+- 用例：`169_c23_deprecated_fallthrough`、`170_c23_nodiscard`（`.expect` 均手写，含诊断 + 程序输出）
 
 ### T4.1–T4.5 `_BitInt`
 
