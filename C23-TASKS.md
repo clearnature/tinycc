@@ -286,6 +286,39 @@
   - **编码方案（选定）**：位宽放 `CType.t` 的 bit20–25（`VT_STRUCT_SHIFT=20`，`VT_STRUCT_MASK` 覆盖 20–31）。可行性来自两处实测：`IS_STRUCT`/`IS_ENUM` 是"与掩码比较相等"，整数类型带上位宽后仍为假；全库只有 **6 处** `~VT_STRUCT_MASK`（`tccdbg.c:1797/1874/2050`、`tccgen.c:1877/3808`），逐处确认不会清掉位宽即可。**不为 `CType` 加新字段**：`CType` 有 32 处局部声明、136 处 `.t =` 赋值、414 处 `.t` 引用，加字段必须审计全部初始化点
   - 改动清单：① `parse_btype` 的 `TOK_BITINT` 分支写入位宽；② `gen_cast`/`gen_assign_cast` 目标为 `_BitInt(N)` 时按 N 截断（signed 走符号扩展）；③ `gen_op`/`gen_opi` 同宽度 `_BitInt` 运算保留类型并截断结果（C23：不做整型提升）；④ 混合宽度按 C23 的通用算术转换取最宽者；⑤ `type_size` 不变（仍取容器大小）
   - 验收计划：对 gcc 差分矩阵（截断 / 算术回绕 / `sizeof(表达式)` / 有符号无符号混合 / `_BitInt(N)` 与 int 混合），再跑 `make test` + `make clean && make` 自举 + `make cross-arm64`
+  - **原子分解（T4.2.1–T4.2.14，按依赖顺序，每步独立可验）**
+
+    阶段 P0：让位宽"可表示且无害"（不改语义，先证明不影响既有行为）
+    | ID | 任务 | 验收 |
+    |---|---|---|
+    | T4.2.1 | 在 `tcc.h` 加 `VT_BINT_W(n)` / `BITINT_WIDTH(t)` / `IS_BITINT(t)` 宏（位宽放 bit20–25；**必须与 `VT_BITFIELD` 互斥**，位域已占用同一段 12 位） | `make` 通过；`172` 仍绿；`sizeof` 序列不变 |
+    | T4.2.2 | `parse_btype` 的 `TOK_BITINT` 分支写入位宽（容器 btype 保持不变） | `sizeof`/赋值/cast 全不变，`172` 绿 |
+    | T4.2.3 | 审计 6 处 `~VT_STRUCT_MASK`（`tccdbg.c:1797/1874/2050`、`tccgen.c:1877/3808`），确认只在 struct/位域路径生效、不会清掉位宽；tccdbg 允许丢弃位宽（只影响 DWARF 类型名） | 加 `-gdwarf` 编译含 `_BitInt` 的文件不崩，debug 段正常 |
+
+    阶段 P1：转换截断（先做"值进类型"这一半）
+    | ID | 任务 | 验收 |
+    |---|---|---|
+    | T4.2.4 | `gen_cast`/`gen_assign_cast` 在 `done:` 之后：目标是 `_BitInt(N)` 且 `N < 8*size` 时截断（复用现有位移惯例 `SHL → SAR/SHR`） | `unsigned _BitInt(4) u = 100;` → 4；`_BitInt(8) x = 300;` → 44（后者现已对） |
+    | T4.2.5 | signed 走 `SAR`（符号扩展）、unsigned 走 `SHR`（零扩展） | `_BitInt(4) a = -9;` 与 `unsigned _BitInt(4) b = 9;` 对 gcc 逐值一致 |
+    | T4.2.6 | 初始化器路径（`decl_initializer_alloc`/`init_putv`）走同一转换 | 局部/全局/结构体成员三处初值截断正确 |
+    | T4.2.7 | `++`/`--`/复合赋值（`+=` 等）经 `vstore` 时同样截断 | `_BitInt(4) a = 7; a++;` → 8；`a += 9;` → 回绕正确 |
+
+    阶段 P2：算术不提升 + 结果截断（核心风险区）
+    | ID | 任务 | 验收 |
+    |---|---|---|
+    | T4.2.8 | `combine_types` 整数分支：两个操作数都带位宽且符号相同 → 结果保留 `max(N1,N2)`、**不提升到 int** | `_BitInt(16) a=30000,b=20000; sizeof(a+b)==2` |
+    | T4.2.9 | 算术结果按结果位宽截断（`gen_op` 之后，用 `gen_cast` 的同一路径） | `a+b` → `-15536`（signed）/ 无符号按模 2^N |
+    | T4.2.10 | 混合符号性按 C23 6.3.1.8（同宽取无符号；不同宽先按符号规则选宽者） | 对 gcc 矩阵：`_BitInt(8)` 与 `unsigned _BitInt(12)` 四则运算 |
+    | T4.2.11 | 与普通整型混合：普通整型 rank 更高 → 提升到 int 并**丢弃位宽** | `_BitInt(8) + 1` → `sizeof`=4，gcc 同 |
+    | T4.2.12 | 常量折叠（`expr_const` 路径）按位宽折叠 | `static_assert(_BitInt(8)200 + 100 == 44)` 与 gcc 一致 |
+
+    阶段 P3：收口
+    | ID | 任务 | 验收 |
+    |---|---|---|
+    | T4.2.13 | 新增差分用例（截断/回绕/`sizeof(表达式)`/混合符号/与 int 混合/常量折叠），`.expect` 由 gcc 生成 | `make test` 全绿 |
+    | T4.2.14 | 门禁：`make clean && make`（自举）+ `make cross-arm64`（应仍绿，因后端零改动）| 三项全过 |
+
+  - **停止条件**：若 T4.2.8/T4.2.9 使既有 173 个用例出现回归且两轮内定位不到根因，回退到 T4.1 的容器语义（保留 P0/P1 的截断改进），并把差异重新写入本文档，不硬推
   - **为什么本轮没做**：②③ 直接改核心算术路径，影响全部后端与全部既有测试；一次做错就是全库回归（此前 `auto` 的 macro 重放路线曾把编译器挂死、`nodiscard` 首版曾破坏自举）。应由独立一轮实施并在每步之后跑自举门禁
 - T4.3 单后端（x86_64）验收：`sizeof(_BitInt(8))==1`、范围截断、与 gcc 差分算术
 - T4.4 其余后端：`make cross-<target>` + QEMU 运行，逐个后端过 smoke
