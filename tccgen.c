@@ -5935,6 +5935,23 @@ ST_FUNC void unary(void)
         }
         next();
         break;
+    case TOK___HAS_C_ATTRIBUTE:
+        /* C23 defines __has_c_attribute for #if only, but gcc answers it in
+           ordinary expressions too, and headers rely on that. */
+        next();
+        skip('(');
+        t = tok;
+        next();
+        if (tok == ':') {           /* scoped name: no vendor is implemented */
+            next();
+            skip(':');
+            next();
+            vpushi(0);
+        } else {
+            vpushi(tcc_c_attribute_value(t));
+        }
+        skip(')');
+        break;
     case TOK_CUINT:
         t = VT_INT | VT_UNSIGNED;
         goto push_tokc;

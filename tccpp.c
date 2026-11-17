@@ -1482,6 +1482,68 @@ static int parse_include(TCCState *s1, int do_next, int test)
     return 1;
 }
 
+/* Value of a standard attribute for __has_c_attribute: the year and month
+   it was adopted, or 0 when it is not known.  Only attributes that
+   actually do something here are listed; answering 202311 for a name that
+   parses but is ignored would make the answer misleading.  Takes the name
+   token so that the front end can answer the same question. */
+ST_FUNC int tcc_c_attribute_value(int tok)
+{
+    static const char *const c23[] = {
+        "deprecated", "fallthrough", "maybe_unused", "nodiscard",
+        "noreturn", "unsequenced", "reproducible", NULL
+    };
+    static char buf[64];
+    const char *name = get_tok_str(tok, NULL);
+    int i, len = strlen(name);
+
+    /* C23 also allows the __name__ spelling of every standard attribute */
+    if (len > 4 && name[0] == '_' && name[1] == '_'
+        && name[len - 2] == '_' && name[len - 1] == '_'
+        && len - 4 < sizeof buf) {
+        memcpy(buf, name + 2, len - 4);
+        buf[len - 4] = 0;
+        name = buf;
+    }
+    for (i = 0; c23[i]; i++)
+        if (0 == strcmp(name, c23[i]))
+            return 202311;
+    return 0;
+}
+
+/* parse the argument list of __has_c_attribute, leaving tok on ')'
+   (the same convention parse_include follows) */
+static int parse_has_c_attribute(void)
+{
+    int t, c;
+
+    next();             /* skip the operator itself */
+    if (tok != '(')
+        expect("'('");
+    next();
+    if (tok < TOK_IDENT)
+        expect("attribute name");
+    t = tok;
+    next();
+    if (tok == ':') {
+        /* scoped attribute, as in vendor::name: only the vendor prefix is
+           known to the parser, and no scoped attribute is implemented */
+        next();
+        if (tok != ':')
+            expect("'::'");
+        next();
+        if (tok < TOK_IDENT)
+            expect("attribute name");
+        next();
+        c = 0;
+    } else {
+        c = tcc_c_attribute_value(t);
+    }
+    if (tok != ')')
+        expect("')'");
+    return c;
+}
+
 /* eval an expression for #if/#elif */
 static int expr_preprocess(TCCState *s1)
 {
@@ -1514,13 +1576,18 @@ static int expr_preprocess(TCCState *s1)
             c = 0;
             if (define_find(tok)
                 || tok == TOK___HAS_INCLUDE
-                || tok == TOK___HAS_INCLUDE_NEXT)
+                || tok == TOK___HAS_INCLUDE_NEXT
+                || tok == TOK___HAS_C_ATTRIBUTE
+                || tok == TOK___HAS_EMBED)
                 c = 1;
             if (t == '(') {
                 next();
                 if (tok != ')')
                     expect("')'");
             }
+            goto c_number;
+        } else if (tok == TOK___HAS_C_ATTRIBUTE) {
+            c = parse_has_c_attribute();
             goto c_number;
         } else if (tok == TOK___HAS_INCLUDE ||
                    tok == TOK___HAS_INCLUDE_NEXT) {
@@ -1979,7 +2046,9 @@ ST_FUNC void preprocess(int is_bof)
         }
         if (define_find(tok)
             || tok == TOK___HAS_INCLUDE
-            || tok == TOK___HAS_INCLUDE_NEXT)
+            || tok == TOK___HAS_INCLUDE_NEXT
+            || tok == TOK___HAS_C_ATTRIBUTE
+            || tok == TOK___HAS_EMBED)
             c ^= 1;
         next_nomacro();
     do_if:
