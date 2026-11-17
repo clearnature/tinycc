@@ -557,20 +557,28 @@ i386 没有可用的 32 位 gcc（`gcc -m32` 缺 multilib 的 libgcc，链接直
 
 ### T7 C23 特性全集审计（不是抽样）
 
-T6 的扫描是"想到什么测什么"，38 条里并不覆盖 C23 的全集。T7 改为**按特性清单枚举**：71 条片段，每条标注它代表哪个 C23 变更，双编译器编译并运行，比较"能否编译 + 输出 + 诊断正文"。当前 **66/71 与 gcc 一致**。
+T6 的扫描是"想到什么测什么"，38 条里并不覆盖 C23 的全集。T7 改为**按特性清单枚举**：73 条片段，每条标注它代表哪个 C23 变更，双编译器编译并运行，比较"能否编译 + 输出 + 诊断正文"。当前 **72/73 与 gcc 一致**。
 
-修掉的（本轮）：`#embed if_empty(...)`、`#embed` 的宏展开文件名（`0919b518` 之后的一批）、`__*_MAX__` 预定义宏族（`258c0f0b`，gcc 的 `omp.h` 因此可以包含）。
+修掉的（T7 首批）：`#embed if_empty(...)`、`#embed` 的宏展开文件名（`0919b518` 之后的一批）、`__*_MAX__` 预定义宏族（`258c0f0b`，gcc 的 `omp.h` 因此可以包含）。
 
-剩余 5 项，全部有意保留，逐条交代：
+修掉的（T8 系列，2026-11-18）：
+
+| 项 | 之前 | 现在 |
+|---|---|---|
+| `[[gnu::packed]]` 等 | 报 `unknown attribute 'gnu'` | **真生效**（`cc9cbcb7` 重构 `parse_one_gnu_attribute`，`1e8b6c8c` 接入 gnu:: 作用域）；`{char;int}` 的 sizeof 从 8 变 5，与 `__attribute__((packed))` 一致 |
+| `[[no_such_attr]]` / `[[vendor::x]]` / `[[gnu::no_such]]` | 报错 | **告警**，措辞与 gcc 逐字相同（`'x' attribute directive ignored` / `'gnu::x' scoped attribute directive ignored`） |
+| `__has_c_attribute(gnu::packed)` | 0 | **1**（与 gcc 一致；年-月值仍只用于标准属性） |
+| `alignas(1) int x;` | 静默接受，且真把对齐降下来 | 报 `'_Alignas' specifiers cannot reduce alignment of 'x'`（`cc9cbcb7`）；`__attribute__((aligned(1)))` 仍允许 |
+| `static_assert(0,"boom")` | 只打印 `boom` | `static assertion failed: "boom"`，含 gcc 的转义规则（`05413f95`） |
+| `-fsanitize=address` 等 | 静默忽略 | 默认告警（`519b65ab`） |
+
+剩余 1 项，有意保留：
 
 | 项 | gcc | tcc | 性质 |
 |---|---|---|---|
-| `[[no_such_attr]]` / `[[gnu::packed]]` | 接受（`-w` 下静默） | **报错** | tcc 有意更严格：静默忽略 `[[gnu::packed]]` 会让结构体 ABI 悄悄变错，宁可报错 |
-| `alignas(1) int x;` | 报错"cannot reduce alignment" | 接受，保留自然对齐 | 诊断缺失（行为安全：实际对齐 ≥ 请求）。不修的理由见下 |
-| `_BitInt(65)` | 支持 | 显式报错"maximum width is 64" | 有意分歧，文案已写明 |
-| `static_assert(0,"boom")` | `static assertion failed: "boom"` | `boom` | 仅文案 |
+| `_BitInt(65)` | 支持 | 显式报错 `maximum width is 64` | 有意分歧，文案已写明原因；tcc 的位宽字段只有 6 位（上限 63+1），扩宽要动类型模型 |
 
-`alignas` 弱化为什么只记录不修：gcc 自己只对 **`alignas`/`_Alignas` 说明符**报错，对 `__attribute__((aligned(1)))` **允许**；而 tcc 自己的 `tests/tcctest.c` 就用 `__attribute__((aligned(1)))`。要区分两种拼写就得在 `AttributeDef` 里加一个"来自说明符"的标记位（该结构已被 `memset` 与 `merge_*` 两处坑过），风险高于收益，而当前行为（保留自然对齐）方向是安全的。
+`alignas` 弱化当初为什么被判"只记录不修"，以及后来怎么修的：gcc 只对 **`alignas`/`_Alignas` 说明符**报错，对 `__attribute__((aligned(1)))` **允许**，而 tcc 自己的 `tests/tcctest.c` 就用后者 —— 所以必须先能区分两种拼写。做法是把 `SymAttr` 里唯一空闲的那一位（原来的 `xxxx`）改成 `alignas_spec`：说明符路径置位、属性路径清零，`merge_symattr` 跟着复制，然后在**对象布局**与**结构体成员布局**两处检查。`make test` 全绿说明 tcctest.c 的 `aligned(1)` 没被打断。
 
 #### T7.2 与 GCC 安装验收套件的对照
 
@@ -583,11 +591,11 @@ T6 的扫描是"想到什么测什么"，38 条里并不覆盖 C23 的全集。T
 | `-flto` | PASS | 接受但忽略 | 需 `-Wunsupported` 才告警 |
 | 默认 PIE | PASS (DYN) | 产出 **EXEC**（无 `-pie`） | 产物类型不同，不影响正确性 |
 | OpenMP | PASS | `omp.h` 可包含；**代码按串行编译，结果正确**（`sum=499500`） | 无并行，但源码可移植 |
-| AddressSanitizer | PASS | `-fsanitize=address` 被**静默忽略**（等于没检查）；**tcc 自带 `-b` 检出同一处越界写** | 机制不同，效果等价 |
+| AddressSanitizer | PASS | `-fsanitize=address` 现在**默认告警** `unsupported option '-fsanitize=address' ignored`（仍然不插桩）；**tcc 自带 `-b` 检出同一处越界写** | 机制不同，效果等价；关键是不再假绿 |
 | libgccjit | PASS | **libtcc** 等价（内存里编译并调用 `twice(21)=42`） | tcc 的 JIT 库 |
 | C++ / D / Fortran | PASS | `unrecognized file type` | 无这些前端 |
 
-其中 `-fsanitize=address` 静默无效是**唯一需要提醒用户的风险**：默认不开 `-Wunsupported` 时 tcc 什么都不说，用户会以为检查生效。要 `-Wunsupported` 且放在该选项**之前**才会看到 `warning: unsupported option '-fsanitize=address'`。
+其中 `-flto` / `-fopenmp` / `-fprofile-*` 也已默认告警（同一组"会让人以为某个 pass 生效"的选项）；`-fno-omit-frame-pointer` 这类只是"不适用"的选项仍保持静默，避免对构建脚本刷屏。`-b`（tcc 自己的边界检查）与 `libtcc` 是这两个 GCC 特性的等价物。
 
 ---
 

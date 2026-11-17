@@ -238,7 +238,7 @@ tcc 的 `tests2` 已经具备本文需要的一切：
 
 剩余不一致只有 1 条，且是文案而非行为：`nullptr_t x;` **不包含** `<stddef.h>` 时，gcc 报 `unknown type name 'nullptr_t'`，tcc 报 `';' expected (got 'x')`——两边都拒绝，只是 tcc 对"未知类型名"的诊断一向笼统（这不是 C23 引入的，`foo x;` 同样如此）。加上 `#include <stddef.h>` 后两边行为完全一致（`sizeof(nullptr_t)`=8、与 `nullptr` 比较、`unreachable()`、`__STDC_VERSION_STDDEF_H__`=202311）。
 
-另一个有意保留的差异不在这个脚本里：`__has_c_attribute(gnu::packed)` → tcc 0 / gcc 1，因为 tcc 没有属性命名空间。
+属性命名空间已支持（2026-11-18）：`[[gnu::packed]]`/`[[gnu::aligned(8)]]` 等 18 个 GNU 属性与 `__attribute__((...))` 走同一套解析（`parse_one_gnu_attribute`），`__has_c_attribute(gnu::packed)` 返回 1（与 gcc 一致；年-月值只用于标准属性）。未实现的属性名（含未知 vendor 作用域）按 gcc 的措辞告警：`'x' attribute directive ignored` / `'gnu::x' scoped attribute directive ignored`。
 
 方法上的教训（写下来避免下次重犯）：
 - **"编译通过"不能当支持某特性的证据**（未知 `__builtin_*` 会退化成隐式声明）。
