@@ -106,6 +106,7 @@ endif
 158_std_c23_version.test : FLAGS += -std=c23
 159_c23_auto.test : FLAGS += -std=c23
 171_c23_auto_errors.test : FLAGS += -std=c23
+172_c23_bitint.test : FLAGS += -std=c23
 165_c23_spellings.test : FLAGS += -std=c23
 166_c23_thread_local.test : FLAGS += -std=c23
 166_c23_thread_local.test : NORUN = true # -run has no TLS support

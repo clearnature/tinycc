@@ -262,8 +262,16 @@
 
 ### T4.1–T4.5 `_BitInt`
 
-- T4.1 类型模型：`CType { int t; Sym *ref; }` 只有 32 位位域（`tcc.h:1044` `VT_BTYPE` 4 位；`tcc.h:1079` 位域宽度 12 位、上限 63）→ 新增位宽存储；先钉 `N ≤ 64`
+- **T4.1 状态：完成**（`N ≤ 64`；只实测 x86_64，其余后端零改动，`make cross-arm64` 仍可构建）
+  - 落点：`tcctok.h`（`TOK_BITINT`）、`tccgen.c` 的 `parse_btype()` 新增 `case TOK_BITINT`
+  - 做法：映射到能容纳 N 位的**最小标准整数类型**（≤8→`VT_BYTE`、≤16→`VT_SHORT`、≤32→`VT_INT`、≤64→`VT_LLONG`），符号性沿 `unsigned`/`signed`。**不动 `CType`**：`CType { int t; Sym *ref; }` 是 32 位位域且 `VT_TYPE` 掩码无空闲位，加宽度字段要审计全库几十处 `CType` 初始化
+  - 该 case 必须自己吃掉 `( N )` 再 `break`，**不能 `goto basic_type`**——那个标签自带 `next()`，会吞掉 `)` 之后的一个 token
+  - 边界（文案照抄 gcc）：N 必须正整数常量；signed 要求 N ≥ 2；unsigned 允许 N = 1；N > 64 报我们自己的范围错误（gcc 支持更大）
+  - 验收（与 gcc 逐行一致）：sizeof `_BitInt(2)=1`/`(9)=2`/`(16)=2`/`(17)=4`/`(33)=8`/`(64)=8`/`unsigned(1)=1`/`unsigned(12)=2`；取值与 cast 全部正确
+  - **已知边界（属 T4.2）**：不做精确 N 位回绕与提升宽度。`_BitInt(16) a=30000,b=20000; a+b` gcc 得 `-15536`/`sizeof=2`，tcc 现按容器提升得 `50000`/`sizeof=4`
+  - 用例：`172_c23_bitint`（`.expect` 由 gcc 生成，只断言 T4.1 保证的部分）
 - gcc 参照：`gcc/tree.h:543`（`BITINT_TYPE` 并入整数类型族）；`c/c-parser.cc:632`、`:838`
+- T4.2 类型提升/常量折叠：让 `a + b` 按精确 N 位回绕、`sizeof(a + b)` 与 gcc 一致（当前差异见上）
 - T4.3 单后端（x86_64）验收：`sizeof(_BitInt(8))==1`、范围截断、与 gcc 差分算术
 - T4.4 其余后端：`make cross-<target>` + QEMU 运行，逐个后端过 smoke
 - T4.5 ABI：`N > 64` 的参数/返回值/对齐，与 gcc 编译对象互链

@@ -4932,6 +4932,34 @@ static int parse_btype(CType *type, AttributeDef *ad, int ignore_label)
             t |= VT_CONSTANT;
             next();
             break;
+        case TOK_BITINT:
+        {
+            /* C23 _BitInt(N).  N <= 64 only: the value is represented by the
+               smallest standard integer type that holds N bits, which gives
+               the size C23 requires.  Exact N-bit wraparound is not modelled
+               yet (see C23-TASKS.md T4.2). */
+            int n, uns = (t & VT_UNSIGNED) != 0;
+            next(); /* past '_BitInt' */
+            skip('(');
+            n = expr_const();
+            skip(')');
+            if (n <= 0)
+                tcc_error("'_BitInt' argument '%d' is not a positive integer"
+                          " constant expression", n);
+            if (!uns && n < 2)
+                tcc_error("'signed _BitInt' argument must be at least 2");
+            if (n > 64)
+                tcc_error("bit-precise integer type with more than 64 bits"
+                          " is not supported");
+            u = n <= 8 ? VT_BYTE : n <= 16 ? VT_SHORT
+              : n <= 32 ? VT_INT : VT_LLONG;
+            if (bt != -1 || st != -1)
+                tcc_error("too many basic types");
+            bt = u;
+            t = (t & ~(VT_BTYPE | VT_LONG)) | u;
+            typespec_found = 1;
+            break;
+        }
         case TOK_COMPLEX:
             tcc_error("_Complex is not yet supported");
         case TOK_FLOAT:
