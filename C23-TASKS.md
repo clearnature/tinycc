@@ -199,7 +199,14 @@
 
 ### T2.5 `[[…]]` 属性
 
-- 落点：`tccpp.c`（`[[`/`]]` 前瞻）、`tccgen.c:3949`（复用 `__attribute__` 解析器）、新增标准属性表
+- 状态：**已完成（只有 `noreturn` 有实际效果）**
+- 落点：`tccgen.c` 新增 `parse_std_attribute()`，入口挂在 `parse_attribute()` 的 `redo:` 处；另外在 `decl()` 与结构体成员循环开头各加一处 `if (tok == '[') parse_attribute(...)`
+- 关键判断：**不能在词法层改写 `[[`** —— `a[b[0]]` 里出现的 `[[` 是两次下标，改写会破坏合法代码；`parse_attribute()` 只在属性位置被调用，那里才无歧义
+- 前瞻实现：`tok == '['` 时先 `next()` 看下一个是否也是 `[`，不是则 `unget_tok('[')` 退回（否则 `int ([4])` 这类抽象声明符会报 `'[' expected`）
+- 属性名：`noreturn` → `func_noreturn`；`maybe_unused`/`fallthrough`/`nodiscard`/`deprecated` 接受但无分析；未知属性报 `unknown attribute 'x'`
+- gcc 参照：`c/c-parser.cc:1804`（`c_parser_std_attribute_specifier_sequence`）
+- 验收（已实测）：文件作用域 `[[nodiscard]] int f(void)`、`[[noreturn]]`、`[[deprecated("old")]]`、成员 `[[maybe_unused]] int a`、语句位置 `[[maybe_unused]] int x`、`arr[b[0]]`/`b[i0]` 双下标全部与 gcc 输出一致
+- 用例：`167_c23_attributes`（`.expect` 由 gcc 生成）
 - gcc 参照：`c/c-parser.cc:1804`（`c_parser_std_attribute_specifier_sequence`）、`:3714` 调用点；属性表在 `c-family/c-attribs.cc`
 - 首批支持：`nodiscard`、`deprecated`、`fallthrough`、`noreturn`、`maybe_unused`
 - 验收：与 `__attribute__` 等价性用例；`[[noreturn]]` 影响代码生成的行为用例；未知标准属性按 C23 要求（忽略或告警，与 gcc 对齐后写死）

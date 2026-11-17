@@ -3946,14 +3946,70 @@ ST_FUNC int exact_log2p1(int i)
   return ret;
 }
 
-/* Parse __attribute__((...)) GNUC extension. */
+/* Parse the inside of a C23 [[...]] attribute specifier.  Attribute names
+   are only recognised where parse_attribute() is called, which is what
+   makes "[[" distinguishable from a subscript; the lexer cannot tell, as
+   a[b[0]] is legal.  Only noreturn has an effect, the rest are accepted
+   and ignored because tcc has no analysis behind them. */
+static void parse_std_attribute(AttributeDef *ad)
+{
+    AttributeDef ad_tmp;
+    int t;
+
+    if (NULL == ad)
+        ad = &ad_tmp;
+    while (tok != ']') {
+        if (tok < TOK_IDENT)
+            expect("attribute name");
+        t = tok;
+        next();
+        if (0 == strcmp(get_tok_str(t, NULL), "noreturn"))
+            ad->f.func_noreturn = 1;
+        else if (0 == strcmp(get_tok_str(t, NULL), "maybe_unused")
+                 || 0 == strcmp(get_tok_str(t, NULL), "fallthrough")
+                 || 0 == strcmp(get_tok_str(t, NULL), "nodiscard")
+                 || 0 == strcmp(get_tok_str(t, NULL), "deprecated"))
+            ; /* accepted, no analysis behind it yet */
+        else
+            tcc_error("unknown attribute '%s'", get_tok_str(t, NULL));
+        if (tok == '(') {
+            /* skip a parenthesised argument, as in deprecated("msg") */
+            int par = 0;
+            do {
+                if (tok == '(')
+                    ++par;
+                else if (tok == ')')
+                    --par;
+                next();
+            } while (par > 0);
+        }
+        if (tok == ',')
+            next();
+        else if (tok != ']')
+            expect("',' or ']]'");
+    }
+    next();
+    skip(']');
+}
+
 static void parse_attribute(AttributeDef *ad)
 {
     int t, n;
     char *astr;
     AttributeDef ad_tmp;
-    
+
 redo:
+    if (tok == '[') {
+        /* only "[[" starts an attribute; a single '[' is an array bound */
+        next();
+        if (tok != '[') {
+            unget_tok('[');
+            return;
+        }
+        next(); /* step past the second '[' */
+        parse_std_attribute(ad);
+        goto redo;
+    }
     if (tok != TOK_ATTRIBUTE1 && tok != TOK_ATTRIBUTE2)
         return;
     if (NULL == ad) /* skip over / ignore attributes */
@@ -4618,6 +4674,8 @@ do_decl:
             c = 0;
             flexible = 0;
             while (tok != '}') {
+                if (tok == '[')
+                    parse_attribute(&ad1);
                 if (!parse_btype(&btype, &ad1, 0)) {
                     if (tok == TOK_STATIC_ASSERT
                         || tok == TOK_STATIC_ASSERT_C23) {
@@ -8875,6 +8933,10 @@ static int decl(int l)
     while (1) {
 
         oldint = 0;
+        /* A C23 attribute specifier may introduce a declaration.  It has to
+           be consumed before parse_btype(), which would otherwise see '['. */
+        if (tok == '[')
+            parse_attribute(&adbase);
         if (!parse_btype(&btype, &adbase, l == VT_LOCAL)) {
             if (l == VT_JMP)
                 return 0;
