@@ -508,7 +508,9 @@ struct SymAttr {
     addrtaken   : 1,
     nodebug     : 1,
     deprecated  : 1, /* [[deprecated]] / attribute((deprecated)) */
-    xxxx        : 1; /* not used */
+    alignas_spec: 1; /* 'aligned' came from an alignas specifier, not from
+                        __attribute__((aligned)), which matters because only
+                        the specifier form may not weaken the alignment */
 };
 
 /* function attributes or temporary attributes for parsing */

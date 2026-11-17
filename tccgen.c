@@ -1194,8 +1194,10 @@ ST_FUNC void vpush_helper_func(int v)
 /* Merge symbol attributes.  */
 static void merge_symattr(struct SymAttr *sa, struct SymAttr *sa1)
 {
-    if (sa1->aligned && !sa->aligned)
+    if (sa1->aligned && !sa->aligned) {
       sa->aligned = sa1->aligned;
+      sa->alignas_spec = sa1->alignas_spec;
+    }
     sa->packed |= sa1->packed;
     sa->weak |= sa1->weak;
     sa->nodebug |= sa1->nodebug;
@@ -4188,6 +4190,9 @@ redo:
                 n = MAX_ALIGN;
             }
             ad->a.aligned = exact_log2p1(n);
+            /* __attribute__((aligned(N))) may lower the alignment, as gcc
+               allows, so remember that this is not an alignas specifier */
+            ad->a.alignas_spec = 0;
 	    if (n != 1 << (ad->a.aligned - 1))
 	      tcc_error("alignment of %d is larger than implemented", n);
             break;
@@ -4393,6 +4398,13 @@ static void struct_layout(CType *type, AttributeDef *ad)
         size = type_size(&f->type, &align);
         a = f->a.aligned ? 1 << (f->a.aligned - 1) : 0;
         packed = 0;
+
+        /* An alignas specifier may only increase the alignment (C23 6.7.5);
+           __attribute__((aligned(N))) is allowed to lower it, so only the
+           specifier form is diagnosed. */
+        if (a && f->a.alignas_spec && a < align)
+            tcc_error("'_Alignas' specifiers cannot reduce alignment of '%s'",
+                      get_tok_str(f->v, NULL));
 
         if (pcc && bit_size == 0) {
             /* in pcc mode, packing does not affect zero-width bitfields */
@@ -4977,6 +4989,7 @@ static int parse_btype(CType *type, AttributeDef *ad, int ignore_label)
               }
               skip(')');
               ad->a.aligned = exact_log2p1(n);
+              ad->a.alignas_spec = 1;
             }
             continue;
         case TOK_LONG:
@@ -9128,6 +9141,11 @@ static void decl_initializer_alloc(CType *type, AttributeDef *ad, int r,
     /* take into account specified alignment if bigger */
     if (ad->a.aligned) {
 	int speca = 1 << (ad->a.aligned - 1);
+        /* C23 6.7.5: an alignas specifier may not weaken the alignment of the
+           object.  The attribute form is exempt, as it is in gcc. */
+        if (ad->a.alignas_spec && speca < align && v)
+            tcc_error("'_Alignas' specifiers cannot reduce alignment of '%s'",
+                      get_tok_str(v, NULL));
         if (speca > align)
             align = speca;
     } else if (ad->a.packed) {
