@@ -1195,6 +1195,7 @@ static void merge_symattr(struct SymAttr *sa, struct SymAttr *sa1)
     sa->dllexport |= sa1->dllexport;
     sa->nodecorate |= sa1->nodecorate;
     sa->dllimport |= sa1->dllimport;
+    sa->deprecated |= sa1->deprecated;
 }
 
 /* Merge function attributes.  */
@@ -1212,6 +1213,10 @@ static void merge_funcattr(struct FuncAttr *fa, struct FuncAttr *fa1)
       fa->func_ctor = 1;
     if (fa1->func_dtor)
       fa->func_dtor = 1;
+    if (fa1->func_nodiscard)
+      fa->func_nodiscard = 1;
+    if (fa1->func_alwinl)
+      fa->func_alwinl = 1;
 }
 
 /* Merge attributes.  */
@@ -3968,10 +3973,12 @@ static void parse_std_attribute(AttributeDef *ad)
         next();
         if (0 == strcmp(get_tok_str(t, NULL), "noreturn"))
             ad->f.func_noreturn = 1;
+        else if (0 == strcmp(get_tok_str(t, NULL), "nodiscard"))
+            ad->f.func_nodiscard = 1;
+        else if (0 == strcmp(get_tok_str(t, NULL), "deprecated"))
+            ad->a.deprecated = 1;
         else if (0 == strcmp(get_tok_str(t, NULL), "maybe_unused")
-                 || 0 == strcmp(get_tok_str(t, NULL), "fallthrough")
-                 || 0 == strcmp(get_tok_str(t, NULL), "nodiscard")
-                 || 0 == strcmp(get_tok_str(t, NULL), "deprecated"))
+                 || 0 == strcmp(get_tok_str(t, NULL), "fallthrough"))
             ; /* accepted, no analysis behind it yet */
         else
             tcc_error("unknown attribute '%s'", get_tok_str(t, NULL));
@@ -6317,6 +6324,9 @@ special_math_val:
 	   Will be used by at least the x86 inline asm parser for
 	   regvars.  */
 	vtop->sym = s;
+        /* C23 [[deprecated]] / attribute((deprecated)) */
+        if (s->a.deprecated)
+            tcc_warning("'%s' is deprecated", get_tok_str(t, NULL));
 
         if (r & VT_SYM) {
             vtop->c.i = 0;
@@ -8938,15 +8948,20 @@ static int decl(int l)
     CType type, btype;
     Sym *sym, *sa;
     AttributeDef ad, adbase;
+    /* attributes that precede the declaration specifiers are collected
+       here: parse_btype() clears the AttributeDef it is given, so they
+       cannot be stored in adbase directly */
+    AttributeDef adpre;
     ElfSym *esym;
 
     while (1) {
 
         oldint = 0;
+        memset(&adpre, 0, sizeof adpre);
         /* A C23 attribute specifier may introduce a declaration.  It has to
            be consumed before parse_btype(), which would otherwise see '['. */
         if (tok == '[')
-            parse_attribute(&adbase);
+            parse_attribute(&adpre);
         if (!parse_btype(&btype, &adbase, l == VT_LOCAL)) {
             if (l == VT_JMP)
                 return 0;
@@ -8995,6 +9010,7 @@ static int decl(int l)
         while (1) { /* iterate thru each declaration */
             type = btype;
 	    ad = adbase;
+            merge_attr(&ad, &adpre);
             type_decl(&type, &ad, &v, l == VT_CMP ? TYPE_DIRECT | TYPE_PARAM : TYPE_DIRECT);
             /*ptype("decl", &type, v);*/
             if ((type.t & VT_BTYPE) == VT_FUNC) {

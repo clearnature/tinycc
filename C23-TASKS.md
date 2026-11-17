@@ -238,8 +238,16 @@
 
 ### T3.3 属性诊断语义
 
-- 落点：`tccgen.c` 属性处理
-- 验收：丢返回值产生 `nodiscard` 警告、`deprecated` 产生警告、`fallthrough` 位置错误告警；告警文本与 `.expect` 对齐
+- 状态：**部分完成** —— `deprecated` 已生效；`fallthrough` 已验收；`nodiscard` 只存了标志、**尚未诊断**
+- 落点：`tcc.h`（`SymAttr.deprecated`、`FuncAttr.func_nodiscard`）、`tccgen.c` 的 `parse_std_attribute()`、`merge_symattr()`、`merge_funcattr()`、`decl()`、`primary()`
+- `deprecated`：引用符号时告警（`primary()` 的 `tok_identifier` 分支，`vtop->sym = s;` 之后），函数与变量都覆盖
+- 两处必须一起改，否则标志根本到不了符号：
+  1. `parse_btype()` 开头 `memset(ad, 0, sizeof(AttributeDef))` 会擦掉"声明说明符之前的属性" → 新增 `adpre` 单独收集，`ad = adbase` 之后 `merge_attr(&ad, &adpre)`
+  2. `merge_symattr()`/`merge_funcattr()` 是**逐字段复制**，新加的位不会自动带上 → 必须显式加 `sa->deprecated |= sa1->deprecated` / `fa->func_nodiscard = 1`
+- `fallthrough`：`[[fallthrough]];` 作为语句已被接受（属性 + 空声明），控制流与 gcc 一致（`f(1)` 得 3）。未做"位置错误告警"
+- **`nodiscard` 未做诊断的原因（实测踩到）**：最初在调用分支写 `vtop->sym = s`，再到语句丢弃点检查 `vtop->sym->f.func_nodiscard`。该做法**破坏自举**（`tcov.o` 段错误）并产生 `'(null)'` 告警——`vtop->sym` 本来就是"标识符回指"（源码注释：even without r&VT_SYM），在丢弃点它可能是变量符号，`f` 与 `c`/`sym_scope` 共用 union，读到的是垃圾。已回退。要做对需要在调用结果上带一个专用字段（SValue 无空闲字段）或引入"最外层表达式是调用"的判定，属独立改动
+- 验收（已实测）：`[[deprecated("…")]]` 函数/变量各触发一次警告，输出与 gcc 相同的 `1 2 7 3`，gcc 亦为 2 条 warning
+- 用例：`169_c23_deprecated_fallthrough`（`.expect` 手写，含两行诊断 + 程序输出）
 
 ### T4.1–T4.5 `_BitInt`
 

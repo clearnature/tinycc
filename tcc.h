@@ -507,7 +507,8 @@ struct SymAttr {
     dllimport   : 1,
     addrtaken   : 1,
     nodebug     : 1,
-    xxxx        : 2; /* not used */
+    deprecated  : 1, /* [[deprecated]] / attribute((deprecated)) */
+    xxxx        : 1; /* not used */
 };
 
 /* function attributes or temporary attributes for parsing */
@@ -520,7 +521,8 @@ struct FuncAttr {
     func_dtor   : 1, /* attribute((destructor)) */
     func_args   : 8, /* PE __stdcall args */
     func_alwinl : 1, /* always_inline */
-    xxxx        : 15;
+    func_nodiscard : 1, /* [[nodiscard]] / attribute((warn_unused_result)) */
+    xxxx        : 14;
 };
 
 /* symbol management */

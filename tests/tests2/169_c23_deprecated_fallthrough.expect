@@ -1,0 +1,3 @@
+169_c23_deprecated_fallthrough.c:29: warning: 'old_fn' is deprecated
+169_c23_deprecated_fallthrough.c:29: warning: 'old_var' is deprecated
+1 2 7 3
