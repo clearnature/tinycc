@@ -547,6 +547,7 @@ ST_FUNC const char *get_tok_str(int v, CValue *cv)
     case TOK_LCHAR:
         cstr_ccat(&cstr_buf, 'L');
     case TOK_CCHAR:
+    case TOK_CCHAR8:
         cstr_ccat(&cstr_buf, '\'');
         add_char(&cstr_buf, cv->i);
         cstr_ccat(&cstr_buf, '\'');
@@ -883,6 +884,8 @@ static int is_known_directive(int tok)
     case TOK_IFDEF:
     case TOK_IFNDEF:
     case TOK_ELIF:
+    case TOK_ELIFDEF:
+    case TOK_ELIFNDEF:
     case TOK_ELSE:
     case TOK_ENDIF:
     case TOK_LINE:
@@ -970,8 +973,9 @@ redo_start:
                 file->buf_ptr = p;
                 next_nomacro();
                 p = file->buf_ptr;
-                if (a == 0 && 
-                    (tok == TOK_ELSE || tok == TOK_ELIF || tok == TOK_ENDIF))
+                if (a == 0 &&
+                    (tok == TOK_ELSE || tok == TOK_ELIF || tok == TOK_ENDIF
+                     || tok == TOK_ELIFDEF || tok == TOK_ELIFNDEF))
                     goto the_end;
                 if (tok == TOK_IF || tok == TOK_IFDEF || tok == TOK_IFNDEF)
                     a++;
@@ -1911,6 +1915,34 @@ ST_FUNC void preprocess(int is_bof)
             tcc_error("#else after #else");
         c = (s1->ifdef_stack_ptr[-1] ^= 3);
         goto test_else;
+    case TOK_ELIFDEF:
+    case TOK_ELIFNDEF:
+        /* #elifdef X / #elifndef X are #elif defined(X) / !defined(X).
+           gcc accepts them in every dialect, so nothing is gated here. */
+        n = tok;
+        if (s1->ifdef_stack_ptr == s1->ifdef_stack)
+            tcc_error("#%s without matching #if",
+                      n == TOK_ELIFDEF ? "elifdef" : "elifndef");
+        c = s1->ifdef_stack_ptr[-1];
+        if (c > 1)
+            tcc_error("#%s after #else",
+                      n == TOK_ELIFDEF ? "elifdef" : "elifndef");
+        if (c == 1) {
+            /* an earlier branch was taken, this one is skipped */
+            skip_to_eol(0);
+            c = 0;
+        } else {
+            next_nomacro();
+            if (tok < TOK_IDENT)
+                tcc_error("invalid argument for '#%s'",
+                          n == TOK_ELIFDEF ? "elifdef" : "elifndef");
+            c = !!define_find(tok);
+            if (n == TOK_ELIFNDEF)
+                c ^= 1;
+            next_nomacro();
+            s1->ifdef_stack_ptr[-1] = c;
+        }
+        goto test_else;
     case TOK_ELIF:
         if (s1->ifdef_stack_ptr == s1->ifdef_stack)
             tcc_error("#elif without matching #if");
@@ -2218,9 +2250,13 @@ static void parse_escape_string(CString *outstr, const uint8_t *buf, int is_long
 static void parse_string(const char *s, int len)
 {
     uint8_t buf[1000], *p = buf;
-    int is_long, sep;
+    int is_long, is_u8, sep;
 
-    if ((is_long = *s == 'L'))
+    is_u8 = s[0] == 'u' && s[1] == '8';
+    is_long = *s == 'L';
+    if (is_u8)
+        s += 2, len -= 2;
+    else if (is_long)
         ++s, --len;
     sep = *s++;
     len -= 2;
@@ -2237,7 +2273,9 @@ static void parse_string(const char *s, int len)
     if (sep == '\'') {
         int char_size, i, n, c;
         /* XXX: make it portable */
-        if (!is_long)
+        if (is_u8)
+            tok = TOK_CCHAR8, char_size = 1;
+        else if (!is_long)
             tok = TOK_CCHAR, char_size = 1;
         else
             tok = TOK_LCHAR, char_size = sizeof(nwchar_t);
@@ -2287,6 +2325,22 @@ static void bn_zero(unsigned int *bn)
     for(i=0;i<BN_SIZE;i++) {
         bn[i] = 0;
     }
+}
+
+/* C23 6.4.4.1 digit separators: a ' may only stand between two digits of
+   the same literal, where the digits depend on the base. */
+static int is_digit_of_base(int c, int hex)
+{
+    if (c >= '0' && c <= '9')
+        return 1;
+    return hex && ((c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'));
+}
+
+static int is_digit_sep(const char *num, int len, int prev, int next)
+{
+    int hex = len > 1 && num[0] == '0'
+        && (num[1] == 'x' || num[1] == 'X');
+    return is_digit_of_base(prev, hex) && is_digit_of_base(next, hex);
 }
 
 /* parse number in null terminated string 'p' and return it in the
@@ -2592,7 +2646,7 @@ static void parse_number(const char *p)
 /* return next token without macro substitution */
 static void next_nomacro(void)
 {
-    int t, c, is_long, len;
+    int t, c, is_long, u8_literal, len;
     TokenSym *ts;
     uint8_t *p, *p1;
     unsigned int h;
@@ -2709,7 +2763,7 @@ maybe_newline:
     case 'i': case 'j': case 'k': case 'l':
     case 'm': case 'n': case 'o': case 'p':
     case 'q': case 'r': case 's': case 't':
-    case 'u': case 'v': case 'w': case 'x':
+    case 'v': case 'w': case 'x':
     case 'y': case 'z': 
     case 'A': case 'B': case 'C': case 'D':
     case 'E': case 'F': case 'G': case 'H':
@@ -2758,6 +2812,17 @@ maybe_newline:
         }
         tok = ts->tok;
         break;
+    case 'u':
+        /* C23 u8 character and string literals.  The prefix is kept in the
+           preprocessed token so that parse_string() can tell them apart. */
+        if (p[1] == '8' && (p[2] == '\'' || p[2] == '\"')) {
+            is_long = 0;
+            u8_literal = 1;
+            PEEKC(c, p);
+            PEEKC(c, p);
+            goto str_const;
+        }
+        goto parse_ident_fast;
     case 'L':
         t = p[1];
         if (t == '\'' || t == '\"' || t == '\\') {
@@ -2781,6 +2846,11 @@ maybe_newline:
         cstr_reset(&tokcstr);
         for(;;) {
             cstr_ccat(&tokcstr, t);
+            if (c == '\''
+                && is_digit_sep((char*)tokcstr.data, tokcstr.size - 1, t, p[1])) {
+                /* C23 digit separator: keep it in the token text, the
+                   conversion step removes it again */
+            } else
             if (!((isidnum_table[c - CH_EOF] & (IS_ID|IS_NUM))
                   || c == '.'
                   || ((c == '+' || c == '-')
@@ -2827,10 +2897,13 @@ maybe_newline:
     case '\'':
     case '\"':
         is_long = 0;
+        u8_literal = 0;
     str_const:
         cstr_reset(&tokcstr);
         if (is_long)
             cstr_ccat(&tokcstr, 'L');
+        else if (u8_literal)
+            cstr_cat(&tokcstr, "u8", 2);
         cstr_ccat(&tokcstr, c);
         p = parse_pp_string(p, c, &tokcstr);
         cstr_ccat(&tokcstr, c);
@@ -3567,8 +3640,23 @@ redo:
 convert:
     /* convert preprocessor tokens into C tokens */
     if (t == TOK_PPNUM) {
-        if  (parse_flags & PARSE_FLAG_TOK_NUM)
+        if  (parse_flags & PARSE_FLAG_TOK_NUM) {
+            char *s = tokc.str.data;
+            if (strchr(s, '\'')) {
+                /* drop C23 digit separators, already validated by the
+                   lexer, so that every base/float path below sees a
+                   plain number */
+                char *d = s, *r = s;
+                while (*r) {
+                    if (*r != '\'')
+                        *d++ = *r;
+                    ++r;
+                }
+                *d = '\0';
+                tokc.str.size = d - s + 1;
+            }
             parse_number(tokc.str.data);
+        }
     } else if (t == TOK_PPSTR) {
         if (parse_flags & PARSE_FLAG_TOK_STR)
             parse_string(tokc.str.data, tokc.str.size - 1);

@@ -110,27 +110,38 @@
 
 ### T0.6 `auto` 在 C23 档位下未推导即报错
 
-- 落点：`tccgen.c` 声明解析（`auto` 目前作为存储类，类型回落 int）
-- 做法：C23 档位下，函数内 `auto <declarator> = <init>;` 若没有类型说明符 → 报错（提示 `auto` 类型推导尚未支持）；非 C23 档位维持现状
-- 验收：`auto x = 1.5;` 报错；`auto int x = 1;`（旧式存储类）仍可编（与 gcc 的 C23 语义差异要写进文档）
+- 状态：**已完成**
+- 落点：`tccgen.c` 的 `parse_btype()`（新增 `auto_seen`，在 `the_end:` 处判定）
+- 做法：C23 档位下，无类型说明符的 `auto` → `error: type inference for 'auto' is not supported`；非 C23 档位维持旧行为（存储类、类型回落 int）
+- 验收（已实测）：`-std=c23` 下 `auto x = 1.5` 报错；默认档位 `sizeof x` 仍为 4（旧行为不变）；`auto int x = 3` 仍可编
+- 用例：`159_c23_auto_rejected`（负向，手写 `.expect`）
 
 ### T1.1 数字分隔符 `1'000`
 
-- 落点：`tccpp.c` 的 `parse_number()`
+- 状态：**已完成**
+- 落点：`tccpp.c` 的 pp-number 扫描（`parse_num:`）接受夹在两个数字之间的 `'`；`convert:` 处就地剥离，`parse_number()` 的各个进制/浮点路径完全不用改
 - gcc 参照：`libcpp/lex.cc:2345-2360`（相邻分隔符、结尾分隔符报错）；开关字段 `libcpp/include/cpplib.h:540`
-- 验收：`1'000'000` == `1000000`；`0x1'F`、`1.5e1'0`、浮点/十六进制/二进制后缀组合；负向 `1''0`、`1'` 报错（与 gcc 同文案级别）
-- 坑：`'` 同时是字符字面量起始符，必须限定在 pp-number 上下文
+- 验收（已实测，与 gcc 逐字符一致）：`1'000` `0x1'F` `0b1010'1010` `1'000'000` `4'000'000'000ULL` `1'000.5` `1.5e1'0` `0x1'F.8p0` `0'123`(八进制 83)
+- 负向：`1''0`、`1'`、`1.'5`、`0x'FF`、`0b1'2` 均报错
+- 坑：十六进制里分隔符后可以是 `A-F`，判定必须按进制（`is_digit_of_base`）；`PEEKC` 是 `c = *++p`，`p` 指向 `c` 本身，分隔符后的字符是 `p[1]`
+- 用例：`161_c23_digit_sep`（`.expect` 由 gcc 生成）
 
-### T1.2 `u8'c'`
+### T1.2 `u8'c'` / `u8"…"`
 
-- 落点：`tccpp.c` 字符字面量解析
-- 验收：`u8'c'` 类型为 `char`、值为 ASCII；多字节字符与 `u8'é'` 的行为需与 gcc 对照后写进用例（gcc 允许，值按 UTF-8 首字节？以实测为准，不臆断）
+- 状态：**已完成（有一处已知偏差）**
+- 前置发现：tcc 原来连 `u8"…"`（C11）都不支持，只支持 `L` 前缀，所以这一项比原计划大
+- 落点：`tccpp.c` 词法 `case 'u'`（`u8'`/`u8"` 时把 `u8` 前缀拼进 PPSTR）、`parse_string()` 识别前缀、新增 `TOK_CCHAR8`（`tcc.h`，扩展 `TOK_HAS_VALUE`）、`tccgen.c` 里 `TOK_CCHAR8` → `VT_BYTE|VT_UNSIGNED`
+- 验收（已实测）：`sizeof(u8'a')==1`、值 97、`u8"hi"` 为普通 char 数组（`sizeof`=3）；与 gcc 的 `sizeof`/取值/字符串输出一致
+- **已知偏差**：`_Generic(u8'a', unsigned char:2, default:9)` 在 tcc 下命中 `default`，gcc 命中 `unsigned char`。常量整体仍是一字节且值正确，属 `_Generic` 对无 cast 常量的匹配差异，未修
+- 用例：`162_c23_u8_literals`（`.expect` 由 gcc 生成，未覆盖 `_Generic`）
 
 ### T1.3 `#elifdef` / `#elifndef`
 
-- 落点：`tccpp.c:1868`（`TOK_ELIF` 分支）、`tcctok.h`（加 `TOK_ELIFDEF`/`TOK_ELIFNDEF`）、`:927-946`（跳过态识别）
-- gcc 参照：`libcpp/directives.cc:162-163`（表项，门控 `STDC23`）、`:482`
-- 验收：`-DA` / `-DB` / 都不定义 三分支矩阵；`#elifndef` 对称用例；跳过态用例（T0.4）转为正向
+- 状态：**已完成**
+- 落点：`tcctok.h`（`TOK_ELIFDEF`/`TOK_ELIFNDEF`）、`tccpp.c` 的 `preprocess()` 新增 case、`preprocess_skip()` 的边界判定、`is_known_directive()`
+- 门控决定：**不按标准门控**——实测 gcc 在 `-std=c11/gnu11/c17/c23` 下都接受 `#elifdef`，属无条件扩展
+- 验收（已实测，6 组与 gcc 完全一致）：`#ifdef A / #elifdef B / #else` 在"都未定义→else"、"只 `-DB`→B"、"只 `-DA`→A"；`#elifndef` 对称三组
+- 用例：`160_c23_elifdef`（gcc 生成 `.expect`）；原 `156_elifdef_skipped` 由负向改为正向（T0.4 的正向化，按计划执行）
 
 ### T1.4 `__VA_OPT__`
 

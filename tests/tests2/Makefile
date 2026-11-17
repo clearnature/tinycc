@@ -104,6 +104,7 @@ endif
 # set __STDC_VERSION__.  See C23-TASKS.md T0.1/T0.2.
 154_c23_std_invalid.test : FLAGS += -std=bogus
 158_std_c23_version.test : FLAGS += -std=c23
+159_c23_auto_rejected.test : FLAGS += -std=c23
 
 GEN-ALWAYS =
 # GEN-ALWAYS += 95_bitfields.expect # does not work

@@ -78,6 +78,8 @@
      DEF(TOK_IFDEF, "ifdef")
      DEF(TOK_IFNDEF, "ifndef")
      DEF(TOK_ELIF, "elif")
+     DEF(TOK_ELIFDEF, "elifdef")
+     DEF(TOK_ELIFNDEF, "elifndef")
      DEF(TOK_ENDIF, "endif")
      DEF(TOK_DEFINED, "defined")
      DEF(TOK_UNDEF, "undef")
