@@ -517,20 +517,32 @@ diff tcc.out gcc.out
 **交叉目标必须真跑，不能只编译**（2026-11-17 起本机可做，已装 qemu-user 与三个交叉工具链）：
 
 ```sh
-make cross-arm64 cross-arm cross-riscv64   # 各目标 tcc + <t>-libtcc1.a
-tests/cross-run.sh                          # 20 个 C23 用例 × 三目标，在 qemu-user 下执行
+make cross-i386 cross-arm64 cross-arm cross-riscv64   # 各目标 tcc + <t>-libtcc1.a
+tests/cross-run.sh                                     # 20 个 C23 用例 × 四目标
 ```
+
+四个目标里 i386 **原生执行**（64 位内核直接跑 32 位 ELF），arm/arm64/riscv64 走 **qemu-user**。
+i386 的链接要特殊处理：`crt1.o/crti.o/crtn.o` 必须从 `/usr/lib32` 显式喂（tcc 默认搜
+`/usr/i686-linux-gnu/lib`，本机不存在），且 `-nostdlib` 会连带丢掉 `libtcc1.a`，需自己补
+`i386-libtcc1.a` 与 `-L/usr/lib32 -lc`。
 
 脚本对每个用例做两次判定：先与提交的 `.expect` 比；不一致时再用**目标自带的 gcc**
 （`arm-linux-gnueabihf-gcc` 等）当 oracle 复算——32 位目标（指针 4 字节、`long` 32 位）本来
-就与 64 位宿主生成的 `.expect` 不同，这一层避免把合法差异误判成 bug。当前 60/60。
+就与 64 位宿主生成的 `.expect` 不同，这一层避免把合法差异误判成 bug。当前 **pass=76、fail=0**。
+
+i386 没有可用的 32 位 gcc（`gcc -m32` 缺 multilib 的 libgcc，链接直接失败），所以 i386 出现
+字长差异时脚本单独记进 `word32` 桶并打印差异内容，不判失败。这个桶恰好是同样的 4 个用例
+（165/180/181/189），与 arm 的差异集合一致——两个独立 32 位目标在同一组用例上只差字长数字
+（`sizeof(nullptr)` 8→4、`(size_t)-1` 2⁶⁴-1→2³²-1、`clzl` 因 `long` 32 位而变），这本身是一种交叉印证。
+**任何其他用例偏离 `.expect` 都判失败**——用"临时把 i386 的 `bswap32` 改成空操作"验证过：
+179 立刻变红，恢复后回到 16 pass + 4 word32。
 
 **为什么需要这一层**：两个 bug 在"编译通过 + 反汇编正确"的状态下存在，只在真跑时暴露：
 
 | bug | 为什么 x86_64 上看不见 | 交叉目标上的表现 |
 |---|---|---|
 | arm64 `gen_bswap` 把源寄存器写进 Rm 位（应写 Rn，bits 9:5） | 不涉及 | 寄存器非 `r0` 时汇编成未定义指令 → SIGILL，179 用例崩溃 |
-| `_BitInt(N≤8)` 变成无符号 | x86 的 `char` 有符号 | `_BitInt(4)=9` 得 9 而非 -7，174 用例；arm/arm64/riscv64 全部受影响（三者都定义 `CHAR_IS_UNSIGNED`） |
+| `_BitInt(N≤8)` 变成无符号 | x86 的 `char` 有符号（i386 同样有符号，所以这个 bug 不影响 i386） | `_BitInt(4)=9` 得 9 而非 -7，174 用例；仅 arm/arm64/riscv64 受影响（三者都定义 `CHAR_IS_UNSIGNED`） |
 
 两者都"看起来对"：前者因为当时测试恰好用 `r0`（两个字段都是 0），反汇编显示 `rev w0, w0` 完全正常；
 后者因为 `parse_btype` 的"plain char 无符号"规则套在了 `_BitInt` 借用的 `VT_BYTE` 容器上。
