@@ -1094,7 +1094,7 @@ struct filespec {
 #define BIT_SIZE(t) (((t) >> (VT_STRUCT_SHIFT + 6)) & 0x3f)
 #define VT_BINT         0x08000000
 #define VT_BINT_W(n)    (((unsigned)((n) == 64 ? 0 : (n)) & 0x3f) << VT_STRUCT_SHIFT)
-#define IS_BITINT(t)    (((t) & VT_BINT) != 0)
+#define IS_BITINT(t)    (((t) & VT_BINT) != 0 && !((t) & VT_BITFIELD))
 #define BITINT_WIDTH(t) ((((t) >> VT_STRUCT_SHIFT) & 0x3f) ? (((t) >> VT_STRUCT_SHIFT) & 0x3f) : 64)
 
 #define VT_UNION    (1 << VT_STRUCT_SHIFT | VT_STRUCT)

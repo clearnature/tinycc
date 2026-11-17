@@ -134,6 +134,7 @@ static void block(int flags);
 #define STMT_COMPOUND 2
 
 static void gen_cast(CType *type);
+static void bitint_narrow(void);
 static void gen_cast_s(int t);
 static inline CType *pointed_type(CType *type);
 static void check_restrict_type(CType *type);
@@ -3051,6 +3052,22 @@ static int combine_types(CType *dest, SValue *op1, SValue *op2, int op)
         if ((t1 & (VT_BTYPE | VT_UNSIGNED)) == (VT_LLONG | VT_UNSIGNED) ||
             (t2 & (VT_BTYPE | VT_UNSIGNED)) == (VT_LLONG | VT_UNSIGNED))
           type.t |= VT_UNSIGNED;
+    } else if (IS_BITINT(t1) && IS_BITINT(t2)) {
+        /* C23: bit-precise integers are not promoted.  The result keeps the
+           wider width; with mixed signedness the unsigned operand wins when
+           it is at least as wide, otherwise the signed one does. */
+        int w1 = BITINT_WIDTH(t1), w2 = BITINT_WIDTH(t2);
+        int u1 = (t1 & VT_UNSIGNED) != 0, u2 = (t2 & VT_UNSIGNED) != 0;
+        int w, u, bt;
+        if (u1 == u2)
+            w = w1 > w2 ? w1 : w2, u = u1;
+        else if (u1)
+            u = w1 >= w2, w = u ? w1 : w2;
+        else
+            u = w2 >= w1, w = u ? w2 : w1;
+        bt = w <= 8 ? VT_BYTE : w <= 16 ? VT_SHORT
+           : w <= 32 ? VT_INT : VT_LLONG;
+        type.t = bt | (u ? VT_UNSIGNED : 0) | VT_BINT | VT_BINT_W(w);
     } else {
         /* integer operations */
         type.t = VT_INT | (VT_LONG & (t1 | t2));
@@ -3198,6 +3215,7 @@ op_err:
             vtop->type.t = VT_INT;
         } else {
             vtop->type.t = t;
+            bitint_narrow(); /* the result may exceed the width */
         }
     }
     // Make sure that we have converted to an rvalue:
@@ -3280,6 +3298,30 @@ static void gen_cast_s(int t)
 }
 
 /* cast 'vtop' to 'type'. Casting to bitfields is forbidden. */
+/* C23 _BitInt(N): narrow the value on top of the stack to its width.  The
+   shift happens in 64-bit arithmetic so that it does not depend on the
+   container: SHL drops the high bits, then SAR (signed) or SHR (unsigned)
+   brings the sign back (gen_op turns SAR into SHR for unsigned types). */
+static void bitint_narrow(void)
+{
+    int w, uns, ctype, sh;
+
+    if (!IS_BITINT(vtop->type.t))
+        return;
+    w = BITINT_WIDTH(vtop->type.t);
+    if (w >= 64)
+        return;
+    uns = (vtop->type.t & VT_UNSIGNED) != 0;
+    ctype = vtop->type.t & VT_BTYPE;
+    sh = 64 - w;
+    vtop->type.t = VT_LLONG | (uns ? VT_UNSIGNED : 0);
+    vpushi(sh);
+    gen_op(TOK_SHL);
+    vpushi(sh);
+    gen_op(uns ? TOK_SHR : TOK_SAR);
+    vtop->type.t = ctype | (uns ? VT_UNSIGNED : 0);
+}
+
 static void gen_cast(CType *type)
 {
     int sbt, dbt, sf, df, c;
@@ -3518,24 +3560,7 @@ error:
 done:
     vtop->type = *type;
     vtop->type.t &= ~ ( VT_QUAL | VT_ARRAY | VT_TLS );
-    if (IS_BITINT(vtop->type.t)) {
-        int w = BITINT_WIDTH(vtop->type.t);
-        int uns = (vtop->type.t & VT_UNSIGNED) != 0;
-        int ctype = vtop->type.t & VT_BTYPE;
-        if (w < 64) {
-            /* Shift inside 64-bit arithmetic so that the count does not
-               depend on the container width: SHL throws the high bits away,
-               then SAR (signed) or SHR (unsigned) brings the sign back. */
-            int sh = 64 - w;
-            vtop->type.t = VT_LLONG | (uns ? VT_UNSIGNED : 0);
-            vpushi(sh);
-            gen_op(TOK_SHL);
-            vpushi(sh);
-            gen_op(uns ? TOK_SHR : TOK_SAR);
-        }
-        /* the value now fits the container */
-        vtop->type.t = ctype | (uns ? VT_UNSIGNED : 0);
-    }
+    bitint_narrow();
 }
 
 /* return type size as known at compile time. Put alignment at 'a' */
