@@ -3518,6 +3518,24 @@ error:
 done:
     vtop->type = *type;
     vtop->type.t &= ~ ( VT_QUAL | VT_ARRAY | VT_TLS );
+    if (IS_BITINT(vtop->type.t)) {
+        int w = BITINT_WIDTH(vtop->type.t);
+        int uns = (vtop->type.t & VT_UNSIGNED) != 0;
+        int ctype = vtop->type.t & VT_BTYPE;
+        if (w < 64) {
+            /* Shift inside 64-bit arithmetic so that the count does not
+               depend on the container width: SHL throws the high bits away,
+               then SAR (signed) or SHR (unsigned) brings the sign back. */
+            int sh = 64 - w;
+            vtop->type.t = VT_LLONG | (uns ? VT_UNSIGNED : 0);
+            vpushi(sh);
+            gen_op(TOK_SHL);
+            vpushi(sh);
+            gen_op(uns ? TOK_SHR : TOK_SAR);
+        }
+        /* the value now fits the container */
+        vtop->type.t = ctype | (uns ? VT_UNSIGNED : 0);
+    }
 }
 
 /* return type size as known at compile time. Put alignment at 'a' */
@@ -3856,6 +3874,7 @@ ST_FUNC void vstore(void)
             delayed_cast = 0;
             if ((dbt == VT_BYTE || dbt == VT_SHORT)
                 && is_integer_btype(sbt)
+                && !IS_BITINT(ft) /* a _BitInt needs the real gen_cast */
                 ) {
                 if ((vtop->r & VT_MUSTCAST)
                     && btype_size(dbt) > btype_size(sbt)
@@ -4964,7 +4983,8 @@ static int parse_btype(CType *type, AttributeDef *ad, int ignore_label)
             if (bt != -1 || st != -1)
                 tcc_error("too many basic types");
             bt = u;
-            t = (t & ~(VT_BTYPE | VT_LONG)) | u;
+            t = (t & ~(VT_BTYPE | VT_LONG | VT_STRUCT_MASK))
+                | u | VT_BINT | VT_BINT_W(n);
             typespec_found = 1;
             break;
         }

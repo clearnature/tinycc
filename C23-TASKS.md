@@ -318,7 +318,15 @@
     | T4.2.13 | 新增差分用例（截断/回绕/`sizeof(表达式)`/混合符号/与 int 混合/常量折叠），`.expect` 由 gcc 生成 | `make test` 全绿 |
     | T4.2.14 | 门禁：`make clean && make`（自举）+ `make cross-arm64`（应仍绿，因后端零改动）| 三项全过 |
 
-  - **实施记录（2026-11-17，第一次尝试 P0+P1 未通过，已回滚到 `82609c5e`）**
+  - **实施记录（2026-11-17，第二次尝试：P0 + P1 已落地）**
+    P0（T4.2.1/T4.2.2）与 P1（T4.2.4–T4.2.6）已完成：`VT_BINT`(bit27) + `VT_BINT_W(n)`(bit20–25，64 存 0) 在 `parse_btype` 写入；`gen_cast` 的 `done:` 按位宽截断。实测四条路径（cast / 局部初值 / 局部赋值 / 全局初值）与 gcc 逐值一致：`_BitInt(4) 9→-7`、`unsigned _BitInt(4) 100→4`、`_BitInt(12) 3000→-1096`、`_BitInt(8) 300→44`。
+    **三个关键定位（第一次尝试的误判在此纠正）**：
+    1. 前一版说"标记在 `parse_btype` 出口被清掉""cast 形式不进分支"，**是 `head -8` 截断输出造成的误判**。用无 include 的最小文件、不截断输出后可见：`DBG1 in-case t=08400001` 紧跟 `DBG2 tail t=08400001`，cast 形式也是 `08400031` —— 编码本身一直是好的
+    2. 截断第一版无效的真因：先把类型提升到 `VT_INT` 再 `SHL/SAR`，在 32 位空间里移位等于没截。**必须在 64 位（`VT_LLONG`）空间做 `SHL (64-N)` 再 `SAR/SHR (64-N)`**，最后落回容器类型
+    3. 局部赋值/初值不生效的真因：`vstore` 对 `dbt == VT_BYTE/VT_SHORT` 走 **delayed_cast 快速路径**，绕过 `gen_cast`。条件里加 `&& !IS_BITINT(ft)` 即可（全局初值走 `init_putv → gen_cast`，所以一开始就是对的）
+    - 用例：`174_c23_bitint_trunc`（`.expect` 由 gcc 生成，覆盖四条路径）
+
+  - **实施记录（2026-11-17，第一次尝试 P0+P1 未通过，已回滚到 `82609c5e`；上述第二次已完成，此条保留作教训）**
     按 T4.2.1+T4.2.2 加了 `VT_BINT`（bit27 标记）+ `VT_BINT_W(n)`（bit20–25 存 N，64 存 0），并在 `parse_btype` 写入；又在 `gen_cast` 的 `done:` 加按位宽截断（复用 `SHL → SAR`）。结果**未生效**，探针给出两条硬事实：
     1. **分支本身没问题**：`_BitInt(2)` 等在**声明**位置确实进入 `TOK_BITINT` 分支，打印 `t=08200001`（标记+宽度+`VT_BYTE` 都在）。
     2. **但到 `parse_btype` 出口（`type->t = t;` 前）`t` 已被清成 `00000001`** —— 即 bits 20–27 被 `& ~VT_STRUCT_MASK` 一类操作抹掉。已排除：`default:` 分支、`the_end` 收尾、`char_is_unsigned`、`VT_LONG` 修正、位域 `type1.t` 赋值处；嫌疑剩在主循环里未逐一确认的 `continue` 路径。

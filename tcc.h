@@ -1092,6 +1092,10 @@ struct filespec {
 #define VT_STRUCT_MASK (((1U << (6+6)) - 1) << VT_STRUCT_SHIFT | VT_BITFIELD)
 #define BIT_POS(t) (((t) >> VT_STRUCT_SHIFT) & 0x3f)
 #define BIT_SIZE(t) (((t) >> (VT_STRUCT_SHIFT + 6)) & 0x3f)
+#define VT_BINT         0x08000000
+#define VT_BINT_W(n)    (((unsigned)((n) == 64 ? 0 : (n)) & 0x3f) << VT_STRUCT_SHIFT)
+#define IS_BITINT(t)    (((t) & VT_BINT) != 0)
+#define BITINT_WIDTH(t) ((((t) >> VT_STRUCT_SHIFT) & 0x3f) ? (((t) >> VT_STRUCT_SHIFT) & 0x3f) : 64)
 
 #define VT_UNION    (1 << VT_STRUCT_SHIFT | VT_STRUCT)
 #define VT_ENUM     (2 << VT_STRUCT_SHIFT) /* integral type is an enum really */
