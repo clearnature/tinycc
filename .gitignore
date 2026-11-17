@@ -73,3 +73,7 @@ libtcc.dylib
 # while working on the C23 support (see C23-TASKS.md).  Nothing in here is
 # part of the compiler, and some of it is regenerated on every run.
 .bench/
+.c23probe*.sh
+
+# Per-session state of the editor tooling; only tmp/ lives here.
+.qwen/
