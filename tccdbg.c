@@ -1199,7 +1199,10 @@ ST_FUNC void tcc_debug_start(TCCState *s1)
 
             dwarf_data1(dwarf_info_section, DWARF_ABBREV_COMPILE_UNIT);
             dwarf_strp(dwarf_info_section, "tcc " TCC_VERSION);
-            dwarf_data1(dwarf_info_section, s1->cversion == 201112 ? DW_LANG_C11 : DW_LANG_C99);
+            /* DWARF has no code for C17/C23 yet, report the closest one */
+            dwarf_data1(dwarf_info_section,
+                        s1->std <= TCC_STD_C89 ? DW_LANG_C89 :
+                        s1->std == TCC_STD_C99 ? DW_LANG_C99 : DW_LANG_C11);
             dwarf_line_strp(dwarf_info_section, filename);
             dwarf_line_strp(dwarf_info_section, buf);
             dwarf_reloc(dwarf_info_section, section_sym, R_DATA_PTR);

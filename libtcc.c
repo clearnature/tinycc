@@ -880,7 +880,8 @@ LIBTCCAPI TCCState *tcc_new(void)
     s->tcc_ext = 1;
     s->nocommon = 1;
     s->dollars_in_identifiers = 1; /*on by default like in gcc/clang*/
-    s->cversion = 199901; /* default unless -std=c11 is supplied */
+    s->cversion = 199901; /* default unless -std= is supplied */
+    s->std = TCC_STD_C99;
     s->warn_implicit_function_declaration = 1;
     s->warn_discarded_qualifiers = 1;
     s->ms_extensions = 1;
@@ -1850,6 +1851,55 @@ static void args_parser_add_file(TCCState *s, const char* filename, int filetype
         ++s->nb_libraries;
 }
 
+/* Set the C standard level from a -std= name (without the leading '=').
+   Returns 0 if the name is not a standard we know.  cversion is the value
+   for __STDC_VERSION__, or 0 for C89 which must not define it. */
+static int set_std(TCCState *s, const char *name)
+{
+    static const struct {
+        const char *name;
+        unsigned char std, gnu;
+        unsigned int version;
+    } stds[] = {
+        { "c89",         TCC_STD_C89, 0, 0 },
+        { "c90",         TCC_STD_C89, 0, 0 },
+        { "iso9899:1990", TCC_STD_C89, 0, 0 },
+        { "gnu89",       TCC_STD_C89, 1, 0 },
+        { "gnu90",       TCC_STD_C89, 1, 0 },
+        { "c99",         TCC_STD_C99, 0, 199901 },
+        { "c9x",         TCC_STD_C99, 0, 199901 },
+        { "iso9899:1999", TCC_STD_C99, 0, 199901 },
+        { "gnu99",       TCC_STD_C99, 1, 199901 },
+        { "gnu9x",       TCC_STD_C99, 1, 199901 },
+        { "c11",         TCC_STD_C11, 0, 201112 },
+        { "c1x",         TCC_STD_C11, 0, 201112 },
+        { "iso9899:2011", TCC_STD_C11, 0, 201112 },
+        { "gnu11",       TCC_STD_C11, 1, 201112 },
+        { "gnu1x",       TCC_STD_C11, 1, 201112 },
+        { "c17",         TCC_STD_C17, 0, 201710 },
+        { "c18",         TCC_STD_C17, 0, 201710 },
+        { "iso9899:2017", TCC_STD_C17, 0, 201710 },
+        { "gnu17",       TCC_STD_C17, 1, 201710 },
+        { "gnu18",       TCC_STD_C17, 1, 201710 },
+        { "c23",         TCC_STD_C23, 0, 202311 },
+        { "c2x",         TCC_STD_C23, 0, 202311 },
+        { "iso9899:2023", TCC_STD_C23, 0, 202311 },
+        { "gnu23",       TCC_STD_C23, 1, 202311 },
+        { "gnu2x",       TCC_STD_C23, 1, 202311 },
+    };
+    int i;
+
+    for (i = 0; i < (int)(sizeof stds / sizeof stds[0]); ++i) {
+        if (strcmp(name, stds[i].name) == 0) {
+            s->std = stds[i].std;
+            s->std_gnu = stds[i].gnu;
+            s->cversion = stds[i].version;
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /* using * to argc/argv to let "tcc -ar" benefit from @listfile expansion */
 PUB_FUNC int tcc_parse_args(TCCState *s, int *pargc, char ***pargv)
 {
@@ -1992,8 +2042,9 @@ PUB_FUNC int tcc_parse_args(TCCState *s, int *pargc, char ***pargv)
             s->static_link = 1;
             break;
         case TCC_OPTION_std:
-            if (strcmp(optarg, "=c11") == 0 || strcmp(optarg, "=gnu11") == 0)
-                s->cversion = 201112;
+            if (*optarg != '=' || !set_std(s, optarg + 1))
+                return tcc_error_noabort("unknown value '%s' for -std",
+                                         optarg + (*optarg == '='));
             break;
         case TCC_OPTION_shared:
             x = TCC_OUTPUT_DLL;

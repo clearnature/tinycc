@@ -869,6 +869,48 @@ static uint8_t *parse_pp_string(uint8_t *p, int sep, CString *str)
     return p;
 }
 
+/* Directives the C preprocessor knows about, i.e. the ones accepted by
+   preprocess().  Used to tell a typo from an unimplemented directive so
+   that unknown ones are diagnosed instead of silently skipped. */
+static int is_known_directive(int tok)
+{
+    switch (tok) {
+    case TOK_DEFINE:
+    case TOK_UNDEF:
+    case TOK_INCLUDE:
+    case TOK_INCLUDE_NEXT:
+    case TOK_IF:
+    case TOK_IFDEF:
+    case TOK_IFNDEF:
+    case TOK_ELIF:
+    case TOK_ELSE:
+    case TOK_ENDIF:
+    case TOK_LINE:
+    case TOK_ERROR:
+    case TOK_WARNING:
+    case TOK_PRAGMA:
+        return 1;
+    }
+    return 0;
+}
+
+/* GCC directives that tcc does not implement but must not reject, as
+   real-world headers use them.  They are reported but do not abort.
+   Note that an identifier is an interned token id >= TOK_IDENT, so the
+   name has to go through get_tok_str() rather than tokc. */
+static int is_ignorable_directive(int tok)
+{
+    const char *name;
+
+    if (tok < TOK_IDENT)
+        return 0;
+    name = get_tok_str(tok, &tokc);
+    return !strcmp(name, "ident")
+        || !strcmp(name, "sccs")
+        || !strcmp(name, "assert")
+        || !strcmp(name, "unassert");
+}
+
 /* skip block of text until #else, #elif or #endif. skip also pairs of
    #if/#endif */
 static void preprocess_skip(void)
@@ -941,6 +983,10 @@ redo_start:
                     goto redo_start;
                 else if (parse_flags & PARSE_FLAG_ASM_FILE)
                     p = parse_line_comment(p - 1);
+                else if (!is_known_directive(tok) && tok != TOK_PPNUM
+                         && !is_ignorable_directive(tok))
+                    tcc_error("invalid preprocessing directive #%s",
+                              get_tok_str(tok, &tokc));
             }
 #if !defined(TCC_TARGET_ARM) && !defined(TCC_TARGET_ARM64)
             else if (parse_flags & PARSE_FLAG_ASM_FILE)
@@ -1973,7 +2019,12 @@ ST_FUNC void preprocess(int is_bof)
         if (tok == '!' && is_bof)
             /* '#!' is ignored at beginning to allow C scripts. */
             goto ignore;
-        tcc_warning("ignoring unknown preprocessing directive #%s", get_tok_str(tok, &tokc));
+        if (is_ignorable_directive(tok)) {
+            tcc_warning("ignoring unsupported preprocessing directive #%s",
+                        get_tok_str(tok, &tokc));
+            goto ignore;
+        }
+        tcc_error("invalid preprocessing directive #%s", get_tok_str(tok, &tokc));
     ignore:
         skip_to_eol(0);
         goto the_end;
@@ -3619,7 +3670,9 @@ static void tcc_predefs(TCCState *s1, CString *cs, int is_asm)
     if (!is_asm) {
       putdef(cs, "__STDC__");
       cstr_printf(cs, "#define __STDC_HOSTED__ %d\n", s1->nostdlib ? 0 : 1);
-      cstr_printf(cs, "#define __STDC_VERSION__ %dL\n", s1->cversion);
+      /* C89 has no __STDC_VERSION__ */
+      if (s1->cversion)
+          cstr_printf(cs, "#define __STDC_VERSION__ %dL\n", s1->cversion);
       cstr_cat(cs,
         /* load more predefs and __builtins */
 #if CONFIG_TCC_PREDEFS

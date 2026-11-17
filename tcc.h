@@ -732,6 +732,14 @@ struct sym_attr {
 #endif
 };
 
+/* C standard levels, in ascending order so that a >= test works.
+   GNU dialects share the level and set std_gnu instead. */
+#define TCC_STD_C89 0
+#define TCC_STD_C99 1
+#define TCC_STD_C11 2
+#define TCC_STD_C17 3
+#define TCC_STD_C23 4
+
 struct TCCState {
     unsigned char verbose; /* if true, display some information during compilation */
     unsigned char nostdinc; /* if true, no standard headers are added */
@@ -747,6 +755,8 @@ struct TCCState {
     unsigned char option_pthread; /* -pthread option */
     unsigned char enable_new_dtags; /* -Wl,--enable-new-dtags */
     unsigned int  cversion; /* supported C ISO version, 199901 (the default), 201112, ... */
+    unsigned char std; /* TCC_STD_xxx, gates language features */
+    unsigned char std_gnu; /* if true, the GNU dialect of std was requested */
 
     /* C language options */
     unsigned char char_is_unsigned;
