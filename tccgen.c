@@ -5875,6 +5875,69 @@ static int ovf_type_width(CType *type, int *sgn, const char *name)
     return 0;
 }
 
+/* Constant folding for the bit builtins (popcount and friends).  They are
+   ordinary functions in libtcc1, so a constant argument would otherwise stay
+   a call and could not appear in a constant expression.  The undefined cases
+   (clz/ctz/clrsb of zero) are not folded, so they keep taking the runtime
+   path and behave exactly as before. */
+enum {
+    BITB_POPCOUNT, BITB_CLZ, BITB_CTZ, BITB_FFS, BITB_PARITY, BITB_CLRSB
+};
+
+static int bitb_popcnt(unsigned long long v)
+{
+    int n = 0;
+    while (v) {
+        n += (int)(v & 1);
+        v >>= 1;
+    }
+    return n;
+}
+
+/* returns -1 when the answer is undefined, so that the caller keeps the call */
+static int bitb_fold(int kind, unsigned long long v, int bits)
+{
+    unsigned long long mask = bits == 64 ? ~0ULL : ((1ULL << bits) - 1);
+    int i;
+
+    v &= mask;
+    switch (kind) {
+    case BITB_POPCOUNT:
+        return bitb_popcnt(v);
+    case BITB_PARITY:
+        return bitb_popcnt(v) & 1;
+    case BITB_FFS:
+        if (!v)
+            return 0;           /* ffs(0) is defined as 0 */
+        for (i = 0; !(v & 1); i++)
+            v >>= 1;
+        return i + 1;
+    case BITB_CTZ:
+        if (!v)
+            return -1;
+        for (i = 0; !(v & 1); i++)
+            v >>= 1;
+        return i;
+    case BITB_CLZ:
+        if (!v)
+            return -1;
+        for (i = 0; !(v & (1ULL << (bits - 1))); i++)
+            v <<= 1;
+        return i;
+    case BITB_CLRSB:
+    {
+        /* number of bits after the top bit that match it */
+        int sign = (v >> (bits - 1)) & 1;
+        if (sign)
+            v = ~v & mask;
+        for (i = 0; i < bits - 1 && !(v & (1ULL << (bits - 2 - i))); i++)
+            ;
+        return i;
+    }
+    }
+    return -1;
+}
+
 ST_FUNC void unary(void)
 {
     int n, t, align, size, r;
@@ -5952,6 +6015,84 @@ ST_FUNC void unary(void)
         }
         skip(')');
         break;
+    case TOK_builtin_popcount:
+    case TOK_builtin_popcountl:
+    case TOK_builtin_popcountll:
+    case TOK_builtin_clz:
+    case TOK_builtin_clzl:
+    case TOK_builtin_clzll:
+    case TOK_builtin_ctz:
+    case TOK_builtin_ctzl:
+    case TOK_builtin_ctzll:
+    case TOK_builtin_ffs:
+    case TOK_builtin_ffsl:
+    case TOK_builtin_ffsll:
+    case TOK_builtin_parity:
+    case TOK_builtin_parityl:
+    case TOK_builtin_parityll:
+    case TOK_builtin_clrsb:
+    case TOK_builtin_clrsbl:
+    case TOK_builtin_clrsbll:
+    {
+        /* These are ordinary functions in libtcc1 (see lib/builtin.c).  The
+           argument is evaluated once either way: a constant is folded here
+           so that it works in a constant expression, and anything else turns
+           into a call with the value already on the stack. */
+        int t0 = tok, kind, bits, helper = tok, folded = -1;
+        CType at;
+
+        if (t0 >= TOK_builtin_popcount && t0 <= TOK_builtin_popcountll)
+            kind = BITB_POPCOUNT;
+        else if (t0 >= TOK_builtin_clz && t0 <= TOK_builtin_clzll)
+            kind = BITB_CLZ;
+        else if (t0 >= TOK_builtin_ctz && t0 <= TOK_builtin_ctzll)
+            kind = BITB_CTZ;
+        else if (t0 >= TOK_builtin_ffs && t0 <= TOK_builtin_ffsll)
+            kind = BITB_FFS;
+        else if (t0 >= TOK_builtin_parity && t0 <= TOK_builtin_parityll)
+            kind = BITB_PARITY;
+        else
+            kind = BITB_CLRSB;
+        /* the 'l' variant follows the target's long, the others are fixed */
+        if (t0 == TOK_builtin_popcountl || t0 == TOK_builtin_clzl
+            || t0 == TOK_builtin_ctzl || t0 == TOK_builtin_ffsl
+            || t0 == TOK_builtin_parityl || t0 == TOK_builtin_clrsbl)
+            bits = LONG_SIZE * 8;
+        else if (t0 == TOK_builtin_popcountll || t0 == TOK_builtin_clzll
+              || t0 == TOK_builtin_ctzll || t0 == TOK_builtin_ffsll
+              || t0 == TOK_builtin_parityll || t0 == TOK_builtin_clrsbll)
+            bits = 64;
+        else
+            bits = 32;
+
+        next();
+        skip('(');
+        expr_eq();
+        /* the parameter type is unsigned, and a narrow argument has to be
+           converted before folding: popcount((unsigned char)0xff) is 8 */
+        at.ref = NULL;
+        at.t = (bits == 64 ? VT_LLONG : VT_INT) | VT_UNSIGNED;
+        gen_cast(&at);
+        if ((vtop->r & (VT_VALMASK | VT_LVAL)) == VT_CONST) {
+            unsigned long long v = vtop->c.i;
+            folded = bitb_fold(kind, v, bits);
+        }
+        if (folded >= 0) {
+            vpop();
+            vpushi(folded);
+        } else {
+            CType rt;
+            vpush_helper_func(helper);
+            vrott(2);
+            gfunc_call(1);
+            rt.ref = NULL;
+            rt.t = VT_INT;
+            vpush(&rt);
+            PUT_R_RET(vtop, rt.t);
+        }
+        skip(')');
+        break;
+    }
     case TOK_CUINT:
         t = VT_INT | VT_UNSIGNED;
         goto push_tokc;

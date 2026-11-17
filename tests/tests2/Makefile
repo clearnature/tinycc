@@ -120,6 +120,10 @@ endif
 168_c23_constexpr.test : FLAGS += -std=c23
 169_c23_deprecated_fallthrough.test : FLAGS += -std=c23
 170_c23_nodiscard.test : FLAGS += -std=c23
+183_c23_has_c_attribute.test : FLAGS += -std=c23
+184_c23_embed_params.test : FLAGS += -std=c23
+185_c23_stdckdint.test : FLAGS += -std=c23
+186_c23_bit_builtin_fold.test : FLAGS += -std=c23
 
 GEN-ALWAYS =
 # GEN-ALWAYS += 95_bitfields.expect # does not work

@@ -207,6 +207,26 @@
      DEF(TOK___tcc_add_overflow, "__tcc_add_overflow")
      DEF(TOK___tcc_sub_overflow, "__tcc_sub_overflow")
      DEF(TOK___tcc_mul_overflow, "__tcc_mul_overflow")
+     /* bit builtins: implemented as ordinary functions in lib/builtin.c, but
+        named here so that a constant argument can be folded (T6.8) */
+     DEF(TOK_builtin_popcount, "__builtin_popcount")
+     DEF(TOK_builtin_popcountl, "__builtin_popcountl")
+     DEF(TOK_builtin_popcountll, "__builtin_popcountll")
+     DEF(TOK_builtin_clz, "__builtin_clz")
+     DEF(TOK_builtin_clzl, "__builtin_clzl")
+     DEF(TOK_builtin_clzll, "__builtin_clzll")
+     DEF(TOK_builtin_ctz, "__builtin_ctz")
+     DEF(TOK_builtin_ctzl, "__builtin_ctzl")
+     DEF(TOK_builtin_ctzll, "__builtin_ctzll")
+     DEF(TOK_builtin_ffs, "__builtin_ffs")
+     DEF(TOK_builtin_ffsl, "__builtin_ffsl")
+     DEF(TOK_builtin_ffsll, "__builtin_ffsll")
+     DEF(TOK_builtin_parity, "__builtin_parity")
+     DEF(TOK_builtin_parityl, "__builtin_parityl")
+     DEF(TOK_builtin_parityll, "__builtin_parityll")
+     DEF(TOK_builtin_clrsb, "__builtin_clrsb")
+     DEF(TOK_builtin_clrsbl, "__builtin_clrsbl")
+     DEF(TOK_builtin_clrsbll, "__builtin_clrsbll")
      /*DEF(TOK_builtin_va_list, "__builtin_va_list")*/
 #if defined TCC_TARGET_PE && defined TCC_TARGET_X86_64
      DEF(TOK_builtin_va_start, "__builtin_va_start")
