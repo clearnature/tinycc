@@ -4619,7 +4619,8 @@ do_decl:
             flexible = 0;
             while (tok != '}') {
                 if (!parse_btype(&btype, &ad1, 0)) {
-                    if (tok == TOK_STATIC_ASSERT) {
+                    if (tok == TOK_STATIC_ASSERT
+                        || tok == TOK_STATIC_ASSERT_C23) {
                         do_Static_assert();
                         continue;
                     }
@@ -4810,6 +4811,7 @@ static int parse_btype(CType *type, AttributeDef *ad, int ignore_label)
             u = VT_INT;
             goto basic_type;
         case TOK_ALIGNAS:
+        case TOK_ALIGNAS_C23:
             { int n;
               AttributeDef ad1;
               next();
@@ -4842,6 +4844,7 @@ static int parse_btype(CType *type, AttributeDef *ad, int ignore_label)
             next();
             break;
         case TOK_BOOL:
+        case TOK_BOOL_C23:
             u = VT_BOOL;
             goto basic_type;
         case TOK_COMPLEX:
@@ -4974,10 +4977,16 @@ static int parse_btype(CType *type, AttributeDef *ad, int ignore_label)
         case TOK_TYPEOF1:
         case TOK_TYPEOF2:
         case TOK_TYPEOF3:
+        case TOK_TYPEOF_UNQUAL:
+        case TOK_TYPEOF_UNQUAL2:
+            n = (tok == TOK_TYPEOF_UNQUAL || tok == TOK_TYPEOF_UNQUAL2);
             next();
             parse_expr_type(&type1);
             /* remove all storage modifiers except typedef */
             type1.t &= ~(VT_STORAGE&~VT_TYPEDEF);
+            /* C23 typeof_unqual drops the top level qualifiers */
+            if (n)
+                type1.t &= ~VT_QUAL;
             if (type1.ref) {
                 sym_to_attr(ad, type1.ref);
                 if (type1.t & VT_ARRAY)
@@ -4985,6 +4994,7 @@ static int parse_btype(CType *type, AttributeDef *ad, int ignore_label)
             }
             goto basic_type2;
         case TOK_THREAD_LOCAL:
+        case TOK_THREAD_LOCAL_C23:
         case TOK___thread:
             if (t & VT_TLS)
                 tcc_error("multiple thread-local storage specifiers");
@@ -5689,11 +5699,29 @@ ST_FUNC void unary(void)
         t = VT_BYTE | VT_UNSIGNED;
         goto push_tokc;
     case TOK_CINT:
-    case TOK_CCHAR: 
+    case TOK_CCHAR:
 	t = VT_INT;
  push_tokc:
 	type.t = t;
 	vsetc(&type, VT_CONST, &tokc);
+        next();
+        break;
+    case TOK_TRUE:
+    case TOK_FALSE:
+        /* C23: true/false are keywords of type bool */
+        type.t = VT_BOOL;
+        vpushi(tok == TOK_TRUE);
+        vtop->type = type;
+        next();
+        break;
+    case TOK_NULLPTR:
+        /* C23: nullptr has type nullptr_t, which gcc models as void *.
+           tcc has no such type, and forcing VT_PTR here crashes codegen
+           because a pointer type without a Sym for the pointed-to type is
+           not representable.  Emit the null pointer constant 0 instead:
+           assignment to and comparison with any pointer then work through
+           the ordinary rule.  Known deviation: sizeof(nullptr) is 4. */
+        vpushi(0);
         next();
         break;
     case TOK_CUINT:
@@ -5861,6 +5889,7 @@ ST_FUNC void unary(void)
     case TOK_ALIGNOF1:
     case TOK_ALIGNOF2:
     case TOK_ALIGNOF3:
+    case TOK_ALIGNOF_C23:
         t = tok;
         next();
         if (tok == '(')
@@ -8854,7 +8883,7 @@ static int decl(int l)
                 next();
                 continue;
             }
-            if (tok == TOK_STATIC_ASSERT) {
+            if (tok == TOK_STATIC_ASSERT || tok == TOK_STATIC_ASSERT_C23) {
                 do_Static_assert();
                 continue;
             }

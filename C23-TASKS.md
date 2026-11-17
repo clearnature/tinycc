@@ -166,25 +166,36 @@
 
 ### T2.1 `nullptr` + `nullptr_t`
 
-- 落点：`tcctok.h`、`tccgen.c`（表达式/赋值/比较）、`include/stddef.h`
-- gcc 参照：关键字表 `c-family/c-common.cc:395`（`{"nullptr", RID_NULLPTR, D_C23 | D_CXX11}`）；`ginclude/stddef.h:465`（`typedef __typeof__(nullptr) nullptr_t;`）
-- 验收：`void *p = nullptr;`、`if (p == nullptr)`、`sizeof(nullptr)` 与 gcc 一致、`_Generic` 匹配；`nullptr_t` 可作形参类型
+- 状态：**已完成（以空指针常量 0 实现，有一处偏差）**
+- 落点：`tcctok.h`（`TOK_NULLPTR`）、`tccgen.c` 的 `primary()`
+- gcc 参照：关键字表 `c-family/c-common.cc:395`；`ginclude/stddef.h:465`（`typedef __typeof__(nullptr) nullptr_t;`）
+- 做法：`nullptr` 产出整数常量 0，靠 C 的"空指针常量"规则完成赋值与比较
+- 验收（已实测）：`void *p = nullptr`、`int *q = nullptr`、`p == nullptr`、`q == nullptr`、`nullptr == 0` 全部正确
+- **已知偏差**：`sizeof(nullptr)` 为 4（gcc 为 8），`_Generic(nullptr, void*:…)` 不匹配。原因是 tcc 无法表示"没有 Sym 的指针类型"——直接给 `vtop->type = VT_VOID|VT_PTR` 或走 `gen_cast` 都会在代码生成阶段段错误（已实测两种写法均崩），而这是 C23 `nullptr_t` 的语义；要做对需要先引入 `nullptr_t` 类型对象
+- 用例：`165_c23_spellings`（不断言 `sizeof(nullptr)`）
 
 ### T2.2 `bool`/`true`/`false` 关键字
 
-- 落点：`tcctok.h`、`tccgen.c`
-- 验收：C23 档位下免头文件可用；同时 `#include <stdbool.h>` 不冲突（该头在 C23 下退化为空/仅 typedef）；`-std=c11` 下行为不变
+- 状态：**已完成**
+- 落点：`tcctok.h`（`TOK_BOOL_C23`、`TOK_TRUE`、`TOK_FALSE`）、`tccgen.c` 的 `parse_btype()`（`bool` 并入 `TOK_BOOL`）与 `primary()`（`true`/`false` 为 `VT_BOOL` 常量）
+- 验收（已实测）：`bool b = true, c = false;` 输出 `1 0`，与 gcc 一致；`#include <stdbool.h>` 下仍正常
+- 用例：`165_c23_spellings`
 
 ### T2.3 `static_assert`/`alignas`/`alignof`/`thread_local` 别名
 
-- 落点：`tcctok.h` + 现有 `_Static_assert`/`_Alignas`/`_Alignof`/`_Thread_local` 实现
-- 验收：单参/双参 `static_assert`；`alignas(16)`/`alignof(double)`；`thread_local int`；两种拼写等价
+- 状态：**已完成**
+- 落点：`tcctok.h` 新增四个拼写 token；`tccgen.c` 把它们并入既有 `TOK_STATIC_ASSERT`/`TOK_ALIGNAS`/`TOK_ALIGNOF3`/`TOK_THREAD_LOCAL` 分支
+- 验收（已实测）：`static_assert(sizeof(int)==4,"int")`（双参）、`_Static_assert(1)`（单参）、`alignas(16)`、`alignof(double)`→8、`thread_local int` 输出 7
+- 坑：tcc 的 `-run` 不支持 TLS（`_Thread_local` 同样报 `thread-local storage not supported with -run`，属既有行为，与拼写无关）→ `166` 用例设 `NORUN`
+- 用例：`165_c23_spellings`、`166_c23_thread_local`（`NORUN`）
 
 ### T2.4 `typeof_unqual`
 
-- 落点：`tccgen.c` typeof 分支
+- 状态：**已完成**
+- 落点：`tcctok.h`（`TOK_TYPEOF_UNQUAL`、`TOK_TYPEOF_UNQUAL2`）、`tccgen.c` 的 typeof 分支（`type1.t &= ~VT_QUAL`）
 - gcc 参照：`c/c-parser.cc:637`、`:843`；关键字表 `__typeof_unqual`（D_CONLY）
-- 验收：`const int a` → `typeof_unqual(a)` 可赋值；`volatile`/`restrict` 同样剥掉；数组/指针的顶层限定语义
+- 验收（已实测）：`const int ci` → `typeof_unqual(ci) u = 4; u = 5;` 可赋值（说明 const 已剥掉），`sizeof(typeof_unqual(ci))`=4
+- 用例：`165_c23_spellings`
 
 ### T2.5 `[[…]]` 属性
 

@@ -105,6 +105,9 @@ endif
 154_c23_std_invalid.test : FLAGS += -std=bogus
 158_std_c23_version.test : FLAGS += -std=c23
 159_c23_auto_rejected.test : FLAGS += -std=c23
+165_c23_spellings.test : FLAGS += -std=c23
+166_c23_thread_local.test : FLAGS += -std=c23
+166_c23_thread_local.test : NORUN = true # -run has no TLS support
 
 GEN-ALWAYS =
 # GEN-ALWAYS += 95_bitfields.expect # does not work

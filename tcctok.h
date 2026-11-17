@@ -67,6 +67,17 @@
      DEF(TOK_TYPEOF1, "typeof")
      DEF(TOK_TYPEOF2, "__typeof")
      DEF(TOK_TYPEOF3, "__typeof__")
+     DEF(TOK_TYPEOF_UNQUAL, "typeof_unqual") /* C23 */
+     DEF(TOK_TYPEOF_UNQUAL2, "__typeof_unqual") /* C23, GCC spelling */
+     /* C23 spellings of the C11 keywords above */
+     DEF(TOK_THREAD_LOCAL_C23, "thread_local")
+     DEF(TOK_STATIC_ASSERT_C23, "static_assert")
+     DEF(TOK_ALIGNOF_C23, "alignof")
+     DEF(TOK_ALIGNAS_C23, "alignas")
+     DEF(TOK_BOOL_C23, "bool")
+     DEF(TOK_TRUE, "true")
+     DEF(TOK_FALSE, "false")
+     DEF(TOK_NULLPTR, "nullptr")
      DEF(TOK_LABEL, "__label__")
 
 /*********************************************************************/
