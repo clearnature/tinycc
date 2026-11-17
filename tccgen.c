@@ -4760,13 +4760,14 @@ static void parse_btype_qualify(CType *type, int qualifiers)
  */
 static int parse_btype(CType *type, AttributeDef *ad, int ignore_label)
 {
-    int t, u, bt, st, type_found, typespec_found, g, n;
+    int t, u, bt, st, type_found, typespec_found, g, n, auto_seen;
     Sym *s;
     CType type1;
 
     memset(ad, 0, sizeof(AttributeDef));
     type_found = 0;
     typespec_found = 0;
+    auto_seen = 0;
     t = VT_INT;
     bt = st = -1;
     type->ref = NULL;
@@ -4916,8 +4917,14 @@ static int parse_btype(CType *type, AttributeDef *ad, int ignore_label)
             t |= VT_RESTRICT;
             next();
             break;
-        case TOK_REGISTER:
         case TOK_AUTO:
+            /* C23 turns 'auto' into a type specifier that takes the type
+               from the initializer.  Inferring it is not implemented, so
+               reject the form rather than quietly declaring an int. */
+            auto_seen = 1;
+            next();
+            break;
+        case TOK_REGISTER:
             next();
             break;
         case TOK_UNSIGNED:
@@ -5016,6 +5023,8 @@ static int parse_btype(CType *type, AttributeDef *ad, int ignore_label)
         type_found = 1;
     }
 the_end:
+    if (auto_seen && !typespec_found && tcc_state->std >= TCC_STD_C23)
+        tcc_error("type inference for 'auto' is not supported");
     if (tcc_state->char_is_unsigned) {
         if ((t & (VT_DEFSIGN|VT_BTYPE)) == VT_BYTE)
             t |= VT_UNSIGNED;
@@ -5675,6 +5684,10 @@ ST_FUNC void unary(void)
         t = VT_SHORT|VT_UNSIGNED;
         goto push_tokc;
 #endif
+    case TOK_CCHAR8:
+        /* C23: a UTF-8 character constant has type unsigned char */
+        t = VT_BYTE | VT_UNSIGNED;
+        goto push_tokc;
     case TOK_CINT:
     case TOK_CCHAR: 
 	t = VT_INT;
