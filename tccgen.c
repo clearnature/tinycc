@@ -167,6 +167,7 @@ static void expr_eq(void);
 static void vpush_type_size(CType *type, int *a);
 static int is_compatible_unqualified_types(CType *type1, CType *type2);
 static inline int64_t expr_const64(void);
+static void expr_const1(void);
 static void vpush64(int ty, unsigned long long v);
 static void vpush(CType *type);
 static int gvtst(int inv, int t);
@@ -5009,7 +5010,21 @@ static int parse_btype(CType *type, AttributeDef *ad, int ignore_label)
             int n, uns = (t & VT_UNSIGNED) != 0;
             next(); /* past '_BitInt' */
             skip('(');
-            n = expr_const();
+            /* Parse the width here rather than through expr_const() so that a
+               floating or non-constant argument gets the message gcc gives:
+               "is not an integer constant expression" is different from
+               "argument '0' is not a positive ...". */
+            expr_const1();
+            if ((vtop->r & (VT_VALMASK | VT_LVAL | VT_SYM | VT_NONCONST))
+                    != VT_CONST
+                || is_float(vtop->type.t)
+                || (vtop->type.t & VT_BTYPE) == VT_STRUCT) {
+                vpop();
+                tcc_error("'_BitInt' argument is not an integer constant"
+                          " expression");
+            }
+            n = (int)vtop->c.i;
+            vpop();
             skip(')');
             if (n <= 0)
                 tcc_error("'_BitInt' argument '%d' is not a positive integer"

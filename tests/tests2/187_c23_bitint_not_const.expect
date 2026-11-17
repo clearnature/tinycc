@@ -1,0 +1,1 @@
+187_c23_bitint_not_const.c:7: error: '_BitInt' argument is not an integer constant expression
