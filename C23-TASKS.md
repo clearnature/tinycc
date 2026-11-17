@@ -555,6 +555,42 @@ i386 没有可用的 32 位 gcc（`gcc -m32` 缺 multilib 的 libgcc，链接直
 
 ---
 
+### T7 C23 特性全集审计（不是抽样）
+
+T6 的扫描是"想到什么测什么"，38 条里并不覆盖 C23 的全集。T7 改为**按特性清单枚举**：71 条片段，每条标注它代表哪个 C23 变更，双编译器编译并运行，比较"能否编译 + 输出 + 诊断正文"。当前 **66/71 与 gcc 一致**。
+
+修掉的（本轮）：`#embed if_empty(...)`、`#embed` 的宏展开文件名（`0919b518` 之后的一批）、`__*_MAX__` 预定义宏族（`258c0f0b`，gcc 的 `omp.h` 因此可以包含）。
+
+剩余 5 项，全部有意保留，逐条交代：
+
+| 项 | gcc | tcc | 性质 |
+|---|---|---|---|
+| `[[no_such_attr]]` / `[[gnu::packed]]` | 接受（`-w` 下静默） | **报错** | tcc 有意更严格：静默忽略 `[[gnu::packed]]` 会让结构体 ABI 悄悄变错，宁可报错 |
+| `alignas(1) int x;` | 报错"cannot reduce alignment" | 接受，保留自然对齐 | 诊断缺失（行为安全：实际对齐 ≥ 请求）。不修的理由见下 |
+| `_BitInt(65)` | 支持 | 显式报错"maximum width is 64" | 有意分歧，文案已写明 |
+| `static_assert(0,"boom")` | `static assertion failed: "boom"` | `boom` | 仅文案 |
+
+`alignas` 弱化为什么只记录不修：gcc 自己只对 **`alignas`/`_Alignas` 说明符**报错，对 `__attribute__((aligned(1)))` **允许**；而 tcc 自己的 `tests/tcctest.c` 就用 `__attribute__((aligned(1)))`。要区分两种拼写就得在 `AttributeDef` 里加一个"来自说明符"的标记位（该结构已被 `memset` 与 `merge_*` 两处坑过），风险高于收益，而当前行为（保留自然对齐）方向是安全的。
+
+#### T7.2 与 GCC 安装验收套件的对照
+
+用 tcc 跑 `/data/work/compiler/gcc/gcc-16.2.0-test`（gcc 自己 15/15 通过）的结果，说明的其实不是 C23，而是"GCC 工具链特性"与"tcc 能提供什么"的对应关系：
+
+| 验收项 | gcc | tcc | 说明 |
+|---|---|---|---|
+| C 编译+运行 | PASS | **PASS** | |
+| 双 TU 链接 | PASS | **PASS** | 普通链接没问题，只是没有 LTO 的跨 TU 优化 |
+| `-flto` | PASS | 接受但忽略 | 需 `-Wunsupported` 才告警 |
+| 默认 PIE | PASS (DYN) | 产出 **EXEC**（无 `-pie`） | 产物类型不同，不影响正确性 |
+| OpenMP | PASS | `omp.h` 可包含；**代码按串行编译，结果正确**（`sum=499500`） | 无并行，但源码可移植 |
+| AddressSanitizer | PASS | `-fsanitize=address` 被**静默忽略**（等于没检查）；**tcc 自带 `-b` 检出同一处越界写** | 机制不同，效果等价 |
+| libgccjit | PASS | **libtcc** 等价（内存里编译并调用 `twice(21)=42`） | tcc 的 JIT 库 |
+| C++ / D / Fortran | PASS | `unrecognized file type` | 无这些前端 |
+
+其中 `-fsanitize=address` 静默无效是**唯一需要提醒用户的风险**：默认不开 `-Wunsupported` 时 tcc 什么都不说，用户会以为检查生效。要 `-Wunsupported` 且放在该选项**之前**才会看到 `warning: unsupported option '-fsanitize=address'`。
+
+---
+
 ## 6. 不做（与 `C23-SUPPORT.md` §6 一致）
 
 `constexpr` 函数（gcc 16 也不支持）、`__builtin_shufflevector`/`__builtin_convertvector`（要求向量类型）、C23 库设施完整实现、gcc 级 conformance 矩阵。
