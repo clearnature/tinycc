@@ -130,6 +130,7 @@ endif
 191_c23_alignas_weaken.test : FLAGS += -std=c23
 192_c23_static_assert_msg.test : FLAGS += -std=c23
 193_c23_gnu_scope.test : FLAGS += -std=c23
+194_c23_instrumenting_flags.test : FLAGS += -std=c23 -fsanitize=address
 
 GEN-ALWAYS =
 # GEN-ALWAYS += 95_bitfields.expect # does not work

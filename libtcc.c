@@ -2095,8 +2095,32 @@ PUB_FUNC int tcc_parse_args(TCCState *s, int *pargc, char ***pargv)
             do ++s->verbose; while (*optarg++ == 'v');
             continue;
         case TCC_OPTION_f:
-            if (set_flag(s, options_f, optarg) < 0)
+            if (set_flag(s, options_f, optarg) < 0) {
+                /* Some -f options turn on a whole instrumentation pass, so
+                   accepting them silently would leave the user believing a
+                   check is active when nothing was emitted (asan, lto,
+                   openmp, coverage).  Warn about those unconditionally; the
+                   rest stay behind -Wunsupported, since build scripts pass
+                   plenty of -f flags that merely do not apply. */
+                static const char *const instrumenting[] = {
+                    "sanitize=", "sanitize-", "lto", "openmp", "openacc",
+                    "profile", "coverage", "stack-protector", "stack-clash",
+                    "split-stack", "no-stack-protector",
+                    NULL
+                };
+                int i, noisy = 0;
+                for (i = 0; instrumenting[i]; i++)
+                    if (0 == strncmp(optarg, instrumenting[i],
+                                     strlen(instrumenting[i]))) {
+                        noisy = 1;
+                        break;
+                    }
+                if (noisy) {
+                    tcc_warning("unsupported option '-f%s' ignored", optarg);
+                    break;
+                }
                 goto unsupported_option;
+            }
             break;
 #ifdef TCC_TARGET_ARM
         case TCC_OPTION_mfloat_abi:
