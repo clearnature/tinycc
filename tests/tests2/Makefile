@@ -100,6 +100,11 @@ endif
 96_nodata_wanted.test : FLAGS += -dt
 139_arm64_errors.test : FLAGS += -dt
 
+# -std= handling: an unknown value must be rejected, and a known one must
+# set __STDC_VERSION__.  See C23-TASKS.md T0.1/T0.2.
+154_c23_std_invalid.test : FLAGS += -std=bogus
+158_std_c23_version.test : FLAGS += -std=c23
+
 GEN-ALWAYS =
 # GEN-ALWAYS += 95_bitfields.expect # does not work
 

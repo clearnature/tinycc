@@ -104,8 +104,9 @@
 
 - 落点：`tests/tests2/154_*.c` 起（现有最大编号 153）
 - 做法：沿用现有机制——`.test` 规则 `Makefile:187` 里 `|| true`，非零退出不中断；`.expect` 写预期诊断（先例 `149_parameter_qualifier_errors`）
-- 首批用例：`154_c23_std_invalid`（`-std=bogus`）、`155_unknown_directive`、`156_elifdef_skip`、`157_auto_no_infer`
-- 验收：`make test` 中这 4 条通过；人为回退修复后这 4 条必须失败（**证明测试真的会报警**，这是防"假绿"的关键一步）
+- 注意：负向用例的 `.expect` **必须手写**。`.expect` 的自动生成规则用 gcc 跑用例，而 gcc 在这些用例上同样失败，生成不出来
+- 已落地 5 条（编号 154–158）：`154_c23_std_invalid`（`-std=bogus`）、`155_unknown_directive`（`#foobar`）、`156_elifdef_skipped`（跳过态）、`157_directive_ident`（`#ident`/`#sccs` 仅告警）、`158_std_c23_version`（`-std=c23` → 202311）
+- 验收：`make test` 中 5 条通过；且已逐条做过"回退修复即变红"的验证（154/155/156 各验一次）
 
 ### T0.6 `auto` 在 C23 档位下未推导即报错
 

@@ -1,0 +1,3 @@
+157_directive_ident.c:6: warning: ignoring unsupported preprocessing directive #ident
+157_directive_ident.c:7: warning: ignoring unsupported preprocessing directive #sccs
+ident ok
