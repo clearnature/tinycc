@@ -6094,6 +6094,75 @@ ST_FUNC void unary(void)
         }
         break;
 
+    case TOK_builtin_bswap16:
+    case TOK_builtin_bswap32:
+    case TOK_builtin_bswap64:
+    {
+        /* Byte swap built as mask/shift/or on the value already on the
+           stack: one evaluation of the argument, and no backend changes
+           (each backend would otherwise need its own instruction). */
+        int size = tok == TOK_builtin_bswap16 ? 2
+                 : tok == TOK_builtin_bswap32 ? 4 : 8;
+        CType bt;
+        int i;
+        parse_builtin_params(0, "e");
+        bt.t = size == 2 ? (VT_SHORT | VT_UNSIGNED)
+             : size == 4 ? (VT_INT | VT_UNSIGNED)
+                         : (VT_LLONG | VT_UNSIGNED);
+        bt.ref = NULL;
+        /* a real cast: on the 32-bit targets a VT_LLONG needs a register
+           pair, which assigning type.t by hand would not allocate */
+        gen_cast(&bt);
+        /* a comparison leaves VT_CMP on the stack; every copy below has to
+           read a value that is already materialized */
+        vcheck_cmp();
+        /* vdup() would give all copies the same register and they would
+           clobber each other, so duplicate into distinct registers */
+        for (i = 1; i < size; i++)
+            gv_dup();
+        for (i = 0; i < size; i++) {
+            unsigned long long mask = 0xffULL << (i * 8);
+            /* byte i sits at bit i*8 and has to move to (size-1-i)*8 */
+            int delta = ((size - 1 - i) - i) * 8;
+            if (i)
+                vswap(); /* bring the next copy of the value to the top */
+            if (size == 8)
+                vpushll(mask);
+            else
+                vpushi((unsigned)mask);
+            gen_op('&');
+            if (delta > 0) {
+                vpushi(delta);
+                gen_op(TOK_SHL);
+            } else if (delta < 0) {
+                vpushi(-delta);
+                gen_op(TOK_SHR);
+            }
+            if (i)
+                gen_op('|');
+        }
+        gen_cast(&bt); /* back to the narrow type: sizeof must match gcc */
+        break;
+    }
+    case TOK_builtin_prefetch:
+        /* no-op: evaluate and drop the address, then the optional rw and
+           locality arguments, and yield a void expression */
+        next();
+        skip('(');
+        if (tok == ')')
+            tcc_error("too few arguments to function '%s'",
+                      get_tok_str(TOK_builtin_prefetch, NULL));
+        while (1) {
+            expr_eq();
+            vpop();
+            if (tok != ',')
+                break;
+            next();
+        }
+        skip(')');
+        type.t = VT_VOID;
+        vpush(&type);
+        break;
     case TOK_builtin_expect:
 	/* __builtin_expect is a no-op for now */
 	parse_builtin_params(0, "ee");

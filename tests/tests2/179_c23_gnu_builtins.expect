@@ -1,0 +1,6 @@
+2 4 8
+4660 305419896 81985529216486895
+65535 4294967295 0
+bswap once
+prefetch once 1
+prefetch void 7

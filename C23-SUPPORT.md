@@ -211,15 +211,20 @@ tcc 的 `tests2` 已经具备本文需要的一切：
 
 ### 6.2 真正值得做的：GNU 内建的有界子集
 
-上面第 2 项里"9 个隐式声明"才是实际使用中最容易踩的坑——它们不会静默出错（tcc 有 implicit declaration warning，链接期 unresolved），但会让"看起来能编"的代码在链接时失败。建议按性价比排序：
+上面第 2 项里"9 个隐式声明"才是实际使用中最容易踩的坑——它们不会静默出错（tcc 有 implicit declaration warning，链接期 unresolved），但会让"看起来能编"的代码在链接时失败。按性价比排序，并记录落地情况：
 
-1. `__builtin_bswap16/32/64`（各后端一条 bswap 指令，S）
-2. `__builtin_prefetch`（编译成空操作，S）
-3. `__builtin_object_size` / `__builtin_assume_aligned`（分析类，返回保守值即可，S）
-4. `__builtin_popcount/clz/ctz`（可用"循环/查表"通用实现，也可各后端映射到原生指令，S–M）
-5. `__builtin_add_overflow` 系列（需进位标志，x86/arm 各 M）
+| 内建 | 状态 | 实现与实测 |
+|---|---|---|
+| `__builtin_bswap16/32/64` | **已完成** | 纯前端实现（`tccgen.c` 的 `TOK_builtin_bswap*`）：`parse_builtin_params(0,"e")` 取值 → `gen_cast` 到无符号容器 → `gv_dup()` 复制 → 逐字节 `& mask` + 移位 + `|` → 再 `gen_cast` 回窄类型。零后端改动。与 gcc 16.2 差分逐值一致（含 `sizeof` 为 2/4/8、位域/比较/窄化实参、`-1`、嵌套调用）；实参只求值一次 |
+| `__builtin_prefetch` | **已完成** | 求值并丢弃 1–3 个实参，结果类型 `void`。与 gcc 对齐：0 个实参报 `too few arguments`（gcc 也拒），多给实参 gcc 与 tcc 都接受 |
+| `__builtin_object_size` / `__builtin_assume_aligned` | 待做 | 分析类，返回保守值即可（`object_size` 返回 `(size_t)-1` 一类，`assume_aligned` 原样返回指针），S |
+| `__builtin_popcount/clz/ctz` | 待做 | 通用"移位+掩码"或查表实现即可前端化，S–M |
+| `__builtin_add_overflow` 系列 | 待做 | 需要进位/溢出标志，属后端工作，M |
+
+两个已落地项的**代价**（有意接受，不是缺陷）：bswap 走前端掩码/移位/或，x86_64 上 `unsigned f32(unsigned x){return __builtin_bswap32(x);}` 生成约 19 条指令，而 gcc 后端直接发 1 条 `bswap`。tcc 的定位是"编译快、代码朴素"，且加后端快速路径需要给 5 个后端各加一个单目运算派发点（`gen_opi`/`gen_opl` 目前没有单目入口），已单列为后续项。行为正确性不受影响。
 
 明确不做：`__builtin_shufflevector`、`__builtin_convertvector`（要求向量类型，tcc 无）。
+
 
 ---
 

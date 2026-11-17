@@ -65,6 +65,11 @@
 | T4.3 | `_BitInt` x86_64 后端 | M | T4.2 | P8 |
 | T4.4 | `_BitInt` 其余 4 后端 | XL | T4.3 | P9 |
 | T4.5 | `_BitInt` ABI 与 `N > 64` | XL | T4.3 | P10 |
+| T5.1 | `__builtin_bswap16/32/64` | S | — | P11 |
+| T5.2 | `__builtin_prefetch` | S | — | P11 |
+| T5.3 | `__builtin_object_size` / `__builtin_assume_aligned` | S | — | P12 |
+| T5.4 | `__builtin_popcount/clz/ctz` | S–M | — | P12 |
+| T5.5 | `__builtin_add_overflow` 系列 | M | — | P12 |
 
 ---
 
@@ -356,6 +361,29 @@
   - 未做（明确排除）：`N > 64` 的多字整数与 ABI、`_BitInt` 的 `-Woverflow` 类告警
   - 用例：`177_c23_bitint_limits`（>64）、`178_c23_bitint_zero`（N=0），`.expect` 手写（tcc 只报首个错误，故拆两个文件）
 
+### T5.1–T5.5 GNU 内建有界子集
+
+- 状态：**T5.1、T5.2 完成**（2026-11-17）；T5.3–T5.5 待做
+- 范围来源：`C23-SUPPORT.md` §6.1 的实测（15 个常见 `__builtin_*` 里 tcc 只有 6 个是真内建，其余 9 个是隐式声明 → 链接期 `unresolved reference`）
+- **T5.1 `__builtin_bswap16/32/64`：完成**
+  - 落点：`tcctok.h`（4 条 `DEF`）+ `tccgen.c` 的 `unary()` 里 `case TOK_builtin_bswap16/32/64`
+  - 实现：纯前端，零后端改动 —— `parse_builtin_params(0,"e")` 取值 → `gen_cast` 到 `unsigned short/int/long long` 容器 → `gv_dup()` 复制 `size-1` 份 → 逐字节 `& mask` + 移位 + `|` → 末尾 `gen_cast` 回窄类型（保证 `sizeof` 与 gcc 一致）
+  - **两个必须踩到的坑（都实测过）**：
+    1. `vdup()` 只是复制 `SValue`，**复制的是同一个寄存器号**；实参是常量时看不出来，实参是函数调用结果时所有副本共用一个寄存器，互相覆盖 → 结果恒为 0。必须用 `gv_dup()`（`get_reg` 只挑零引用寄存器，无空闲则 spill）。这是 `f(0x11223344u)` 与 `f(counted(...))` 结果不同的真因
+    2. 实参是**比较表达式**时 `vtop->r` 是 `VT_CMP`，而 `vpushv()`（`vdup` 的实现）不调 `vcheck_cmp()`；复制出来的多份 `VT_CMP` 只有顶层会被物化 → 先显式 `vcheck_cmp()`
+  - 证据：与 gcc 16.2 差分（`sizeof` 2/4/8 + 13 组值，含位域/比较/算术/嵌套/`-1`/窄化实参）**逐行完全一致**；副作用只求值一次；`nm -u` 无 `__builtin_*` 未定义符号；四后端交叉编译通过；`i386` freestanding（`-nostdlib` + `int $0x80`）运行期退出码 0
+  - **代价（有意接受）**：x86_64 上 `unsigned f32(unsigned x){return __builtin_bswap32(x);}` ≈ 19 条指令，gcc 后端是 1 条 `bswap`。要发单条指令需给 5 个后端各加单目运算派发点（`gen_opi`/`gen_opl` 无单目入口），单列后续项
+- **T5.2 `__builtin_prefetch`：完成**
+  - 落点：同上，`case TOK_builtin_prefetch`
+  - 实现：`next(); skip('(');` → 0 个实参报 `too few arguments to function '__builtin_prefetch'`（与 gcc 对齐，gcc 也拒 0 个）→ 逐个 `expr_eq()` + `vpop()` → 结果压 `VT_VOID`
+  - 与 gcc 的实测一致点：1/2/3/4 个实参都接受（gcc 的它多给也不报）；实参只求值一次；可作为逗号表达式的左操作数
+- **T5.3 `__builtin_object_size` / `__builtin_assume_aligned`：待做**（返回保守值：`(size_t)-1` / 原样返回指针）
+- **T5.4 `__builtin_popcount/clz/ctz`：待做**（前端"移位+掩码"或查表即可）
+- **T5.5 `__builtin_add_overflow` 系列：待做**（需进位/溢出标志，属后端工作，M）
+- 明确不做：`__builtin_shufflevector` / `__builtin_convertvector`（要求向量类型，tcc 没有）
+- 用例：`179_c23_gnu_builtins`（`.expect` 由 gcc 生成，覆盖 `sizeof`、值矩阵、单次求值、`prefetch` 的 `void` 语义与求值次数）
+
+
 ---
 
 ## 4. 批次（PR）划分
@@ -371,6 +399,8 @@
 | **P7** | T3.3 | 三条诊断告警 |
 | **P8** | T4.1–T4.3 | `_BitInt(≤64)` 在 x86_64 可用 |
 | **P9/P10** | T4.4、T4.5 | 其余后端 + ABI |
+| **P11** | T5.1、T5.2 | `bswap16/32/64` 与 gcc 逐值一致（含单次求值）、`prefetch` 返回 void；四后端交叉编译 + i386 运行期 |
+| **P12** | T5.3–T5.5 | 其余内建；`nm -u` 不再漏 `__builtin_*` |
 
 ---
 
