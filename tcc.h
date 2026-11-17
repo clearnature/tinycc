@@ -1658,6 +1658,12 @@ ST_FUNC void gjmp_addr(int a);
 ST_FUNC int gjmp_cond(int op, int t);
 ST_FUNC int gjmp_append(int n, int t);
 ST_FUNC void gen_opi(int op);
+#if defined(TCC_TARGET_I386) || defined(TCC_TARGET_X86_64) \
+    || defined(TCC_TARGET_ARM) || defined(TCC_TARGET_ARM64)
+/* only these backends define it; the front end calls it there and keeps its
+   own mask/shift/or sequence elsewhere */
+ST_FUNC void gen_bswap(int size);
+#endif
 ST_FUNC void gen_opf(int op);
 ST_FUNC void gen_cvt_ftoi(int t);
 ST_FUNC void gen_cvt_itof(int t);

@@ -1601,6 +1601,27 @@ ST_FUNC int gjmp_append(int n, int t)
   return t;
 }
 
+/* byte swap of vtop's value: size is 2, 4 or 8.  ARM has rev and rev16,
+   both working in place.  The 64 bit form is a pair swap of the two 32 bit
+   halves after swapping each one. */
+ST_FUNC void gen_bswap(int size)
+{
+  int r = gv(RC_INT), r2 = vtop->r2;
+
+  if (size == 2) {
+    o(0xe6bf0fb0 | (r << 12) | r);          /* rev16 rR, rR */
+  } else if (size == 4) {
+    o(0xe6bf0f30 | (r << 12) | r);          /* rev rR, rR */
+  } else {
+    o(0xe6bf0f30 | (r << 12) | r);          /* rev rR, rR */
+    o(0xe6bf0f30 | (r2 << 12) | r2);        /* rev rR2, rR2 */
+    /* swap the two halves; two movs would lose one of them, so xor-swap */
+    o(0xe0200000 | (r << 16) | (r << 12) | r2);   /* eor rR, rR, rR2 */
+    o(0xe0200000 | (r << 16) | (r2 << 12) | r2);  /* eor rR2, rR, rR2 */
+    o(0xe0200000 | (r << 16) | (r << 12) | r2);   /* eor rR, rR, rR2 */
+  }
+}
+
 /* generate an integer binary operation */
 void gen_opi(int op)
 {

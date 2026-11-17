@@ -1933,6 +1933,20 @@ static void arm64_gen_opil(int op, uint32_t l)
     }
 }
 
+/* byte swap of vtop's value: size is 2, 4 or 8.  rev works in place, so the
+   same register number goes in both fields. */
+ST_FUNC void gen_bswap(int size)
+{
+    int r = gv(RC_INT);
+
+    if (size == 2)
+        o(0x5ac00400 | r << 16 | r);        /* rev16 wR, wR */
+    else if (size == 8)
+        o(0xdac00c00 | r << 16 | r);        /* rev xR, xR */
+    else
+        o(0x5ac00800 | r << 16 | r);        /* rev wR, wR */
+}
+
 ST_FUNC void gen_opi(int op)
 {
     arm64_gen_opil(op, 0);

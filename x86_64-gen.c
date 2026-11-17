@@ -1667,6 +1667,29 @@ ST_FUNC int gjmp_cond(int op, int t)
         return t;
 }
 
+/* byte swap of vtop's value: size is 2, 4 or 8.  x86 has bswap for 32 and
+   64 bit registers; the 16 bit form is rolw $8, which is one instruction
+   too (two with the operand-size prefix). */
+ST_FUNC void gen_bswap(int size)
+{
+    int r = gv(RC_INT);
+
+    if (size == 2) {
+        /* 66 [REX] C1 /0 08: rolw $8, r16.  o() writes little endian and
+           stops at a zero byte, so the prefix and the opcode go out
+           separately instead of as one 0x66c1 word. */
+        o(0x66);
+        if (REX_BASE(r))
+            o(0x40 | REX_BASE(r));
+        o(0xc1);
+        o(0xc0 | (0 << 3) | REG_VALUE(r));
+        o(8);
+    } else {
+        orex(size == 8, r, 0, 0x0f);    /* 0F C8+rd (with REX.W for 64 bit) */
+        o(0xc8 + REG_VALUE(r));
+    }
+}
+
 /* generate an integer binary operation */
 void gen_opi(int op)
 {

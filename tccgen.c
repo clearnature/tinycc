@@ -6312,6 +6312,25 @@ ST_FUNC void unary(void)
         /* a real cast: on the 32-bit targets a VT_LLONG needs a register
            pair, which assigning type.t by hand would not allocate */
         gen_cast(&bt);
+        /* x86 and ARM have a byte swap instruction (rolw for 16 bits on x86,
+           rev/rev16 on ARM).  Two cases keep the mask/shift/or path: a 64-bit
+           value on i386, where it lives in a register pair the backend has no
+           sequence for, and riscv64, which has no byte swap without the Zbb
+           extension. */
+        {
+#if defined(TCC_TARGET_X86_64) || defined(TCC_TARGET_ARM64) \
+    || defined(TCC_TARGET_ARM)
+            gen_bswap(size);
+            gen_cast(&bt);  /* sizeof must match gcc */
+            break;
+#elif defined(TCC_TARGET_I386)
+            if (size != 8) {
+                gen_bswap(size);
+                gen_cast(&bt);
+                break;
+            }
+#endif
+        }
         /* a comparison leaves VT_CMP on the stack; every copy below has to
            read a value that is already materialized */
         vcheck_cmp();

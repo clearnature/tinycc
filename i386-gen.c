@@ -836,6 +836,24 @@ ST_FUNC int gjmp_cond(int op, int t)
     return t;
 }
 
+/* byte swap of vtop's value: size is 2 or 4.  There is no 16 bit bswap, so
+   16 bits use rolw $8; a 64 bit value lives in a register pair here, and the
+   front end keeps its own sequence for that case. */
+ST_FUNC void gen_bswap(int size)
+{
+    int r = gv(RC_INT);
+
+    if (size == 2) {
+        o(0x66);                        /* 66 C1 /0 08: rolw $8, r16 */
+        o(0xc1);
+        o(0xc0 | (0 << 3) | REG_VALUE(r));
+        o(8);
+    } else {
+        o(0x0f);                        /* 0F C8+rd */
+        o(0xc8 + REG_VALUE(r));
+    }
+}
+
 ST_FUNC void gen_opi(int op)
 {
     int r, fr, opc, c;
