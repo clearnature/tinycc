@@ -92,16 +92,16 @@
 60_errors_and_warnings.c:188: error: identifier expected
 
 [test_static_assert]
-60_errors_and_warnings.c:194: error: ONE is not 1
+60_errors_and_warnings.c:194: error: static assertion failed: "ONE is not 1"
 
 [test_static_assert_2]
-60_errors_and_warnings.c:198: error: 0 is 0
+60_errors_and_warnings.c:198: error: static assertion failed: "0 is 0"
 
 [test_static_assert_c2x]
-60_errors_and_warnings.c:202: error: _Static_assert fail
+60_errors_and_warnings.c:202: error: static assertion failed
 
 [test_static_assert_empty_string]
-60_errors_and_warnings.c:205: error: 
+60_errors_and_warnings.c:205: error: static assertion failed: ""
 
 [test_void_array]
 60_errors_and_warnings.c:208: error: declaration of an array of incomplete type elements

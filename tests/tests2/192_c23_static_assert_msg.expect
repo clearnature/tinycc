@@ -1,0 +1,1 @@
+192_c23_static_assert_msg.c:8: error: static assertion failed: "quote:\" tab:\011 end"

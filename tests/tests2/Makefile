@@ -128,6 +128,7 @@ endif
 186_c23_bit_builtin_fold.test : FLAGS += -std=c23
 189_c23_stddef_nullptr_t.test : FLAGS += -std=c23
 191_c23_alignas_weaken.test : FLAGS += -std=c23
+192_c23_static_assert_msg.test : FLAGS += -std=c23
 
 GEN-ALWAYS =
 # GEN-ALWAYS += 95_bitfields.expect # does not work

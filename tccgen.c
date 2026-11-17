@@ -9503,6 +9503,32 @@ static void free_inline_functions(TCCState *s)
     dynarray_reset(&s->inline_fns, &s->nb_inline_fns);
 }
 
+/* gcc repeats the message of a failed static assertion in its original
+   spelling: in double quotes, with '\\"' and '\\\\' escaped and every other
+   non-printable character as a three digit octal escape. */
+static void static_assert_failed(const char *msg)
+{
+    size_t i, n = strlen(msg);
+    char *buf = tcc_malloc(n * 4 + 3), *o = buf;
+
+    *o++ = '"';
+    for (i = 0; i < n; i++) {
+        unsigned char c = msg[i];
+        if (c == '"' || c == '\\') {
+            *o++ = '\\';
+            *o++ = c;
+        } else if (c >= 0x20 && c < 0x7f) {
+            *o++ = c;
+        } else {
+            sprintf(o, "\\%03o", c);
+            o += 4;
+        }
+    }
+    *o++ = '"';
+    *o = 0;
+    tcc_error("static assertion failed: %s", buf);
+}
+
 static void do_Static_assert(void)
 {
     int c;
@@ -9511,14 +9537,17 @@ static void do_Static_assert(void)
     next();
     skip('(');
     c = expr_const();
-    msg = "_Static_assert fail";
+    msg = NULL;
     if (tok == ',') {
         next();
         msg = parse_mult_str("string constant")->data;
     }
     skip(')');
-    if (c == 0)
-        tcc_error("%s", msg);
+    if (c == 0) {
+        if (msg)
+            static_assert_failed(msg);
+        tcc_error("static assertion failed");
+    }
     skip(';');
 }
 
