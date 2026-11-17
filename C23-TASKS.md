@@ -514,10 +514,32 @@ make test-install                              # 装了之后验证安装面
 diff tcc.out gcc.out
 ```
 
+**交叉目标必须真跑，不能只编译**（2026-11-17 起本机可做，已装 qemu-user 与三个交叉工具链）：
+
+```sh
+make cross-arm64 cross-arm cross-riscv64   # 各目标 tcc + <t>-libtcc1.a
+tests/cross-run.sh                          # 20 个 C23 用例 × 三目标，在 qemu-user 下执行
+```
+
+脚本对每个用例做两次判定：先与提交的 `.expect` 比；不一致时再用**目标自带的 gcc**
+（`arm-linux-gnueabihf-gcc` 等）当 oracle 复算——32 位目标（指针 4 字节、`long` 32 位）本来
+就与 64 位宿主生成的 `.expect` 不同，这一层避免把合法差异误判成 bug。当前 60/60。
+
+**为什么需要这一层**：两个 bug 在"编译通过 + 反汇编正确"的状态下存在，只在真跑时暴露：
+
+| bug | 为什么 x86_64 上看不见 | 交叉目标上的表现 |
+|---|---|---|
+| arm64 `gen_bswap` 把源寄存器写进 Rm 位（应写 Rn，bits 9:5） | 不涉及 | 寄存器非 `r0` 时汇编成未定义指令 → SIGILL，179 用例崩溃 |
+| `_BitInt(N≤8)` 变成无符号 | x86 的 `char` 有符号 | `_BitInt(4)=9` 得 9 而非 -7，174 用例；arm/arm64/riscv64 全部受影响（三者都定义 `CHAR_IS_UNSIGNED`） |
+
+两者都"看起来对"：前者因为当时测试恰好用 `r0`（两个字段都是 0），反汇编显示 `rev w0, w0` 完全正常；
+后者因为 `parse_btype` 的"plain char 无符号"规则套在了 `_BitInt` 借用的 `VT_BYTE` 容器上。
+
 **防假完成的三条硬判据**：
 1. 正向用例的 `.expect` 必须由 gcc 生成（`make tests2.NNN+`），不能手写；
 2. 每条负向用例必须验证过"回退修复就变红"；
-3. 涉及后端的任务（T4.x）必须在目标架构上真跑，不只是编译通过。
+3. 涉及后端的任务（T4.x、T6.10）必须在目标架构上**跑出结果**，`tests/cross-run.sh` 通过；
+   编译通过或反汇编看着对，都不算证据。
 
 ---
 
