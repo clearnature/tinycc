@@ -54,6 +54,41 @@
     #define __SIZEOF_LONG_LONG__ 8
     #define __LONG_LONG_MAX__ 0x7fffffffffffffffLL
     #define __CHAR_BIT__ 8
+
+    /* The derived limits gcc also predefines.  Headers shipped with gcc and
+       clang use them (gcc's own omp.h needs __UINTPTR_MAX__), and #if needs
+       them to be plain integer literals, so they are spelled out per ABI
+       instead of being computed from the types above. */
+    #define __SCHAR_MAX__ 0x7f
+    #define __SHRT_MAX__ 0x7fff
+    #define __INT8_MAX__ 0x7f
+    #define __INT16_MAX__ 0x7fff
+    #define __INT32_MAX__ 0x7fffffff
+    #define __INT64_MAX__ 0x7fffffffffffffffLL
+    #define __UINT8_MAX__ 0xff
+    #define __UINT16_MAX__ 0xffff
+    #define __UINT32_MAX__ 0xffffffffU
+    #define __UINT64_MAX__ 0xffffffffffffffffULL
+    #define __INTMAX_MAX__ 0x7fffffffffffffffLL
+    #define __UINTMAX_MAX__ 0xffffffffffffffffULL
+    #define __SIG_ATOMIC_MAX__ 0x7fffffff
+#if __SIZEOF_POINTER__ == 4
+    #define __SIZE_MAX__ 0xffffffffU
+    #define __PTRDIFF_MAX__ 0x7fffffff
+    #define __INTPTR_MAX__ 0x7fffffff
+    #define __UINTPTR_MAX__ 0xffffffffU
+#elif __SIZEOF_LONG__ == 4
+    /* 64bit Windows: pointer-sized is long long */
+    #define __SIZE_MAX__ 0xffffffffffffffffULL
+    #define __PTRDIFF_MAX__ 0x7fffffffffffffffLL
+    #define __INTPTR_MAX__ 0x7fffffffffffffffLL
+    #define __UINTPTR_MAX__ 0xffffffffffffffffULL
+#else
+    #define __SIZE_MAX__ 0xffffffffffffffffUL
+    #define __PTRDIFF_MAX__ 0x7fffffffffffffffL
+    #define __INTPTR_MAX__ 0x7fffffffffffffffL
+    #define __UINTPTR_MAX__ 0xffffffffffffffffUL
+#endif
     #define __ORDER_LITTLE_ENDIAN__ 1234
     #define __ORDER_BIG_ENDIAN__ 4321
     #define __BYTE_ORDER__ __ORDER_LITTLE_ENDIAN__

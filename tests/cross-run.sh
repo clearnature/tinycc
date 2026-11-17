@@ -28,7 +28,7 @@ tests="165_c23_spellings 168_c23_constexpr 172_c23_bitint
 179_c23_gnu_builtins 180_c23_builtin_object_size 181_c23_gnu_bit_builtins
 182_c23_builtin_overflow 183_c23_has_c_attribute 184_c23_embed_params
 185_c23_stdckdint 186_c23_bit_builtin_fold 187_c23_bitint_not_const
-188_c23_bitint_var_width 189_c23_stddef_nullptr_t"
+188_c23_bitint_var_width 189_c23_stddef_nullptr_t 190_c23_predefined_limits"
 
 # These four expectations encode 64-bit sizes (sizeof(nullptr), (size_t)-1,
 # clz of a 64-bit long).  A 32-bit target cannot match them, and when no
