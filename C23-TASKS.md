@@ -70,6 +70,17 @@
 | T5.3 | `__builtin_object_size` / `__builtin_assume_aligned` | S | — | P12 |
 | T5.4 | `__builtin_popcount/clz/ctz` | S–M | — | P12 |
 | T5.5 | `__builtin_add/sub/mul_overflow`（含 `_p`） | M | — | P12 |
+| T6.1 | `__has_c_attribute` | S | — | P13 |
+| T6.2 | `__has_embed` + `__STDC_EMBED_*` | S | #embed | P13 |
+| T6.3 | `#embed` 的 `limit`/`prefix`/`suffix` | S | — | P13 |
+| T6.4 | `[[unsequenced]]` / `[[reproducible]]` | S | — | P13 |
+| T6.5 | `constexpr` 数组与结构体 | S | — | P13 |
+| T6.6 | `sizeof(nullptr)` 应为指针大小 | S | — | P13 |
+| T6.7 | `include/stdckdint.h` | S | T5.5 | P13 |
+| T6.8 | 位内建常量折叠 | M | — | P13 |
+| T6.9 | `_BitInt` 非 ICE 诊断 | S | — | P13 |
+| T6.10 | bswap 后端快速路径 | M | — | P13 |
+| T6.11 | 文档纠错 | S | — | P13 |
 
 ---
 
@@ -277,10 +288,10 @@
   - 该 case 必须自己吃掉 `( N )` 再 `break`，**不能 `goto basic_type`**——那个标签自带 `next()`，会吞掉 `)` 之后的一个 token
   - 边界（文案照抄 gcc）：N 必须正整数常量；signed 要求 N ≥ 2；unsigned 允许 N = 1；N > 64 报我们自己的范围错误（gcc 支持更大）
   - 验收（与 gcc 逐行一致）：sizeof `_BitInt(2)=1`/`(9)=2`/`(16)=2`/`(17)=4`/`(33)=8`/`(64)=8`/`unsigned(1)=1`/`unsigned(12)=2`；取值与 cast 全部正确
-  - **已知边界（属 T4.2）**：不做精确 N 位回绕与提升宽度。`_BitInt(16) a=30000,b=20000; a+b` gcc 得 `-15536`/`sizeof=2`，tcc 现按容器提升得 `50000`/`sizeof=4`
+  - **曾经的已知边界（T4.2 已修）**：初期不做精确 N 位回绕与提升宽度，`_BitInt(16) a=30000,b=20000; a+b` 曾是 `50000`/`sizeof=4`。**现在与 gcc 一致：`-15536`/`sizeof=2`**（本轮 sweep 实测复核，`bitint_narrow()` 负责截断）
   - 用例：`172_c23_bitint`（`.expect` 由 gcc 生成，只断言 T4.1 保证的部分）
 - gcc 参照：`gcc/tree.h:543`（`BITINT_TYPE` 并入整数类型族）；`c/c-parser.cc:632`、`:838`
-- **T4.2 状态：未开始（已完成测量与设计，待实施）**——它必须让类型携带精确位宽，属于类型模型改动
+- **T4.2 状态：完成**（`625984ff` P0+P1、`7615510e` P2；位宽编码、`combine_types` 双 `_BitInt` 分支、`bitint_narrow()` 截断都已落地，实施记录见本节末尾）——**下面几段保留的是实施前的测量与方案**，作为决策依据留档
   - 实测偏差（`172` 之外的三条，均与 gcc 不同）：
     | 代码 | tcc 现在 | gcc 16.2 |
     |---|---|---|
@@ -405,6 +416,58 @@
 - 明确不做：`__builtin_shufflevector` / `__builtin_convertvector`（要求向量类型，tcc 没有）
 - 用例：`179_c23_gnu_builtins`（bswap/prefetch）、`180_c23_builtin_object_size`（object_size/assume_aligned）、`181_c23_gnu_bit_builtins`（popcount/clz/ctz/ffs/parity/clrsb）、`182_c23_builtin_overflow`（add/sub/mul/_p），四份 `.expect` 均由 gcc 生成
 
+### T6.1–T6.11 C23 一致性扫描补漏
+
+- 状态：**全部完成**（2026-11-17）。发现方式：用 38 条 C23 片段逐条跑 `gcc -std=c23` 与 `tcc -std=c23` 对比（脚本 `.bench/t7/sweep.py`），从 21/38 一致修到 34/38 一致，剩余 4 条是"两边都报错、只有文案不同"（`va_opt` 用例本身写错、`bitint_*`、`nullptr_t` 需 `<stddef.h>`）与 1 条有意保留（`gnu::` 命名空间）
+- **T6.1 `__has_c_attribute`：完成**（`2116fd2b`）
+  - 七个已实现的标准属性返回 **202311**（采纳年月），未知属性 0；`__deprecated__` 双下划线拼写同样识别
+  - 三个坑：① 必须同时在 `#if` 扫描器**和**普通表达式解析器里实现（gcc 在指令外也回答，头文件会这么用）；② helper 必须像 `parse_include` 一样**把 tok 停在 `)`**，否则扫描器会把下一行吞进表达式（实测报 `bad preprocessor expression: #if 202311 0 0 = 1 ;`）；③ `defined(__has_c_attribute)` 要为真，所以 token 要加进 `__has_include` 出现的那三处
+  - 有意差异：`__has_c_attribute(gnu::packed)` 返回 0（gcc 返回 1）。tcc 没有属性命名空间（`[[gnu::packed]]` 直接报错），回答 1 就是撒谎
+  - 用例：`183_c23_has_c_attribute`
+- **T6.2 `__has_embed` + `__STDC_EMBED_*`：完成**（`a24fde3c`）
+  - `FOUND`=1 / `EMPTY`=2 / `NOT_FOUND`=0，三个宏预定义；资源存在但产出 0 字节（空文件或 `limit(0)`）为 EMPTY
+  - 坑：`#if` 里文件名已被 `parse_string()` 解码成 `TOK_STR`（去引号），不是 `TOK_PPSTR`
+  - 用例：`184_c23_embed_params`
+- **T6.3 `#embed` 的 `limit`/`prefix`/`suffix`：完成**（`a24fde3c`，与 T6.2 同一提交）
+  - `limit(N)` 按**预处理常量表达式**求值（与 `#if` 同一套 `begin_macro` + `expr_const`），所以 `limit(1+1)` 可以、未声明标识符按 0 处理（与 gcc 一致），负数报错
+  - `prefix`/`suffix` **原样发出**、不补逗号（缺逗号就是语法错误，gcc 同样）；资源为空时 prefix/suffix 整段丢弃
+  - 坑：`cstr_cat(cs, s, 0)` 会连**终止 NUL** 一起拷进去，必须用 -1，否则嵌套缓冲区中间出现 NUL，报 `unrecognized character \x00`
+- **T6.4 `[[unsequenced]]`/`[[reproducible]]`：完成**（`33ef142e`）
+  - 都是优化承诺，tcc 无优化器 → 接受并忽略；gcc 对函数与对象都接受，所以不做位置检查
+  - 用例：`165_c23_spellings` 未覆盖，靠 `attr_*` sweep 项验证
+- **T6.5 constexpr 聚合对象：完成**（`93f86551`）
+  - 标量继续用 enum 式常量（可进常量表达式）；**聚合**（数组/结构体）走普通对象路径 + `VT_CONSTANT` + 强制初值
+  - 依据：gcc 本身也拒绝 `static_assert(tab[1] == 2)` 与 `int bound[tab[0] + 1]`，聚合 constexpr **不是**常量表达式，只需只读
+  - 已知局限（非本轮引入）：tcc 从不对**任何** `const` 对象写入报错（`const int g = 1; g = 5;` 也静默通过）
+  - 用例：`168_c23_constexpr` 扩了数组/结构体/取址
+- **T6.6 `sizeof(nullptr)`：完成**（`db48bfc7`）
+  - 原来把 nullptr 降级成整数 0，`sizeof` 是 4；改为用 `mk_pointer` 造真正的 `void *` 空指针（`mk_pointer` 会给指向类型分配 `Sym`，这是当初"裸 VT_PTR 会崩"的真正原因）
+  - 与 gcc 一致：`sizeof(nullptr)`=`sizeof(void*)`、与 `int*`/`char*`/`void*` 比较、`nullptr == 0`、`(void*)0 == nullptr`、传参、作条件
+  - 用例：`165_c23_spellings` 现在断言 `sizeof(nullptr)`
+- **T6.7 `include/stdckdint.h`：完成**（`d4b922d7`）
+  - glibc 2.43 有 `stdbit.h` 但**没有** `stdckdint.h`，gcc 自带一份；tcc 现在也自带，`ckd_add/sub/mul` 包 `__builtin_*_overflow`
+  - 尾部按 gcc 同样写法留 libc 扩展口（`__has_include_next` + `_LIBC_STDCKDINT_H` 守卫）
+  - 用例：`185_c23_stdckdint`
+- **T6.8 位内建常量折叠：完成**（`c1a99a13`）
+  - popcount/clz/ctz/ffs/parity/clrsb 的 18 个名字（含 `l`/`ll`）现在是关键字：常量实参在**前端折叠**（可用于 `static_assert`/`enum`/数组维度），非常量仍发 `libtcc1` 调用，两条路径共用**同一份已求值实参**，不重放
+  - 未定义情形（`clz(0)`/`ctz(0)`）**不折叠**，保持走原来的运行期代码，避免出现第二个答案
+  - 三方核对 129 例（6 函数 × 两宽度 × 边界值）：折叠值 = 运行期值 = gcc
+  - 用例：`186_c23_bit_builtin_fold`
+- **T6.9 `_BitInt` 非整数常量表达式诊断：完成**（`e2761500`）
+  - 原来 `_BitInt(2.5)` 报数字解析器的 `constant exceeds 32 bit`、变量报 `constant expression expected`；现在按 gcc 区分两种：非 ICE → `'_BitInt' argument is not an integer constant expression`；常量但 ≤0 → `argument '0' is not a positive ...`
+  - 做法：用 `expr_const1()` 自己解析并检查 `vtop`（是否 `VT_CONST`、是否浮点/聚合），不再走 `expr_const()`
+  - 用例：`187_c23_bitint_not_const`、`188_c23_bitint_var_width`（负向，`.expect` 手写）
+- **T6.10 bswap 后端快速路径：完成**（`75b55c83`）
+  - x86_64：`bswap r32`/`bswap r64`/`rolw $8`；i386：`bswap r32`/`rolw $8`（64 位仍是寄存器对，保留前端序列）；arm64：`rev w`/`rev x`/`rev16 w`；arm：`rev`/`rev16`，64 位用 `rev`×2 + `eor`×3 交换两半
+  - riscv64 无 Zbb 保证 → 保留前端 mask/shift/or（编译期 `#if` 选择，riscv64 构建里不引用 `gen_bswap`，否则 `ST_FUNC` 在单文件构建下报"声明但未定义"）
+  - **编码用独立反汇编器（llvm-objdump 23.1.4）验证**，抓到两个错：`0xdac00000` 是 `rbit` 不是 `rev`（`rev w` 是 `0x5ac00800`）；arm 64 位首版用两条 `mov`，第二条读到的是已被覆盖的寄存器
+  - 另记：x86 的 `o()` **按小端输出且遇 0 字节即止**，所以 `o(0x66c1)` 会变成 `c1 66`，多字节操作码必须逐字节发
+- **T6.11 文档纠错：完成**（本提交）
+  - 删掉/改写三处已被实测推翻的断言：`_BitInt(16)` 算术按容器提升（现为 `-15536`/`sizeof=2`）、`T4.2 状态：未开始`（实际已完成）、`TOK_BITINT` 注释里的 "Exact N-bit wraparound is not modelled yet"
+  - `C23-SUPPORT.md` §6.2 里 bswap"约 19 条指令"改为实测的单条指令
+
+- 用例汇总：`183`–`188` 六个新文件，编号最大的 C23 用例到此为 188
+
 
 ---
 
@@ -423,6 +486,7 @@
 | **P9/P10** | T4.4、T4.5 | 其余后端 + ABI |
 | **P11** | T5.1、T5.2 | `bswap16/32/64` 与 gcc 逐值一致（含单次求值）、`prefetch` 返回 void；四后端交叉编译 + i386 运行期 |
 | **P12** | T5.3–T5.5 | 全部内建落地；`nm -u` 不再漏 `__builtin_*`（除明确不做的向量类） |
+| **P13** | T6.1–T6.11 | 一致性扫描补齐；每项与 gcc 逐值/逐诊断对照，`make test` 170 项全过 |
 
 ---
 

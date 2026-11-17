@@ -5005,8 +5005,8 @@ static int parse_btype(CType *type, AttributeDef *ad, int ignore_label)
         {
             /* C23 _BitInt(N).  N <= 64 only: the value is represented by the
                smallest standard integer type that holds N bits, which gives
-               the size C23 requires.  Exact N-bit wraparound is not modelled
-               yet (see C23-TASKS.md T4.2). */
+               the size C23 requires, and bitint_narrow() truncates results
+               back to N bits (see C23-TASKS.md T4.2). */
             int n, uns = (t & VT_UNSIGNED) != 0;
             next(); /* past '_BitInt' */
             skip('(');

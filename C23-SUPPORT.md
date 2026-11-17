@@ -204,8 +204,8 @@ tcc 的 `tests2` 已经具备本文需要的一切：
 | 项 | 实测事实 | 结论 | 若要做的工作量 |
 |---|---|---|---|
 | `constexpr` **函数** | gcc 16.2 自己报 `'constexpr' requires an initialized data declaration`（`constexpr int sq(int){...}` 直接拒） | **不做**：对标 gcc 本就不含它，任何依赖它的代码在 gcc 16 下也编不过 | 需"编译期求值器"。tcc 有 `tcc_run`/`tcc_relocate`（libtcc 可在内存里执行），理论路径是"把调用在内存里跑出常量"，但要处理循环/递归上限/副作用禁令，属 M–L 独立工程 |
-| GNU 扩展长尾 | 实测 15 个常见 `__builtin_*`，tcc **6 个是真内建**（`expect`/`unreachable`/`alloca`/`types_compatible_p`/`constant_p`/`choose_expr`）；**另外 10 个**在 `-c` 的 `.o` 里看似未定义：其中 `popcount`/`clz`/`ctz`（**含 `l`/`ll` 变体，以及 `ffs`/`parity`/`clrsb`**）其实由 `lib/builtin.c` 以普通函数提供、链接期从 `libtcc1.a` 解析（`-run` 实测与 gcc 逐值一致，见 `181_c23_gnu_bit_builtins`）；真正缺的是 `bswap16/32/64`、`prefetch`、`object_size`、`assume_aligned`、`add_overflow`（`nm -u` 里出现 ≠ 链接失败，这是最初判定"9 个隐式声明"时的误读） | **只做有界子集**：`bswap*`、`prefetch`、`object_size`/`assume_aligned`（**已全部完成**，见 §6.2）、`add_overflow`（待做）；**`shufflevector`/`convertvector` 不做**——它们要求向量类型，tcc 完全没有，属 XL | 已落地 3 组；真正长尾无界 |
-| C23 库设施 | glibc **2.43** 已带 `/usr/include/stdbit.h`，tcc 直接可用（`stdc_count_ones(7)`=3、`stdc_leading_zeros(1)`=31，与 gcc 逐值一致）；`stdckdint.h` 在 glibc 2.43 里**不存在**；tcc 自带 `stdatomic/stdalign/stdbool/stdnoreturn` | **基本不是编译器的事**：库设施由 libc 提供。可选补一份 `stdckdint.h` + `stdbit.h` 的兜底头（header-only，S），只在目标 libc 缺时生效 | S（纯头文件） |
+| GNU 扩展长尾 | 实测 15 个常见 `__builtin_*`，tcc **6 个是真内建**（`expect`/`unreachable`/`alloca`/`types_compatible_p`/`constant_p`/`choose_expr`）；**另外 10 个**在 `-c` 的 `.o` 里看似未定义：其中 `popcount`/`clz`/`ctz`（**含 `l`/`ll` 变体，以及 `ffs`/`parity`/`clrsb`**）其实由 `lib/builtin.c` 以普通函数提供、链接期从 `libtcc1.a` 解析（`-run` 实测与 gcc 逐值一致，见 `181_c23_gnu_bit_builtins`）；真正缺的是 `bswap16/32/64`、`prefetch`、`object_size`、`assume_aligned`、`add_overflow`（`nm -u` 里出现 ≠ 链接失败，这是最初判定"9 个隐式声明"时的误读） | **只做有界子集**：`bswap*`、`prefetch`、`object_size`/`assume_aligned`、`add_overflow`（**五组全部完成**，见 §6.2）；**`shufflevector`/`convertvector` 不做**——它们要求向量类型，tcc 完全没有，属 XL | 已落地 5 组；真正长尾无界 |
+| C23 库设施 | glibc **2.43** 已带 `/usr/include/stdbit.h`，tcc 直接可用（`stdc_count_ones(7)`=3、`stdc_leading_zeros(1)`=31，与 gcc 逐值一致）；`stdckdint.h` 在 glibc 2.43 里**不存在**；tcc 自带 `stdatomic/stdalign/stdbool/stdnoreturn` | **库设施由 libc 提供**，只有 libc 缺的那一个由编译器兜底：`include/stdckdint.h` 已随 tcc 提供（包 `__builtin_*_overflow`，见 T6.7）。`stdbit.h` 不重复提供——glibc 有，且它是纯库实现 | 已完成（S，纯头文件） |
 | gcc 级 conformance 矩阵 | 本机 gcc 源码 `gcc/testsuite/gcc.dg/` 里 **c2x/c23 相关 285 个**、整个目录 **7520 个** | **不做**：这些用例大量依赖 gcc 内部头、`dg-*` 指令与 gcc 私有扩展，无法直接移植；自建等价矩阵是月级工程。现有"tests2 + gcc 生成 `.expect` 的差分"以约 1% 成本覆盖实用需求 | 月级（XL） |
 | `_BitInt` `N > 64` | 位宽字段只有 6 位（bit20–25），存不下 >64；真要实现需：新的类型表示 + 多字运算（5 个后端）+ `>64` 位的参数/返回值 ABI + 大整数常量折叠 | **不做，改为解析期显式报错**（`'_BitInt(65)' is not supported: the maximum width is 64`）。与 gcc 的差异已在文案里写明 | XL（独立项目） |
 
@@ -215,20 +215,32 @@ tcc 的 `tests2` 已经具备本文需要的一切：
 
 | 内建 | 状态 | 实现与实测 |
 |---|---|---|
-| `__builtin_bswap16/32/64` | **已完成** | 纯前端实现（`tccgen.c` 的 `TOK_builtin_bswap*`）：`parse_builtin_params(0,"e")` 取值 → `gen_cast` 到无符号容器 → `gv_dup()` 复制 → 逐字节 `& mask` + 移位 + `|` → 再 `gen_cast` 回窄类型。零后端改动。与 gcc 16.2 差分逐值一致（含 `sizeof` 为 2/4/8、位域/比较/窄化实参、`-1`、嵌套调用）；实参只求值一次 |
+| `__builtin_bswap16/32/64` | **已完成** | 后端指令：x86_64 `bswap r32`/`bswap r64`/`rolw $8`，i386 `bswap r32`/`rolw $8`（64 位值在寄存器对里，保留前端序列），arm64 `rev w`/`rev x`/`rev16 w`，arm `rev`/`rev16`（64 位 `rev`×2 + `eor`×3 交换两半）；riscv64 无 Zbb 保证 → 用前端 mask/shift/or 后备。编码由 llvm-objdump 独立解码验证。与 gcc 16.2 差分逐值一致（含 `sizeof` 为 2/4/8、位域/比较/窄化实参、`-1`、嵌套调用）；实参只求值一次 |
 | `__builtin_prefetch` | **已完成** | 求值并丢弃 1–3 个实参，结果类型 `void`。与 gcc 对齐：0 个实参报 `too few arguments`（gcc 也拒），多给实参 gcc 与 tcc 都接受 |
 | `__builtin_object_size` / `__builtin_assume_aligned` | **已完成** | `object_size` 是编译期查询：实参**不求值**（`nocode_wanted++` 解析后弹出）；第二个实参必须是常量 0–3，否则报 `is not integer constant between 0 and 3`。直接命名的**整个数组**给精确值（局部 `char buf[10]` → 10、全局 `static char[7]` → 7，与 gcc 一致），其余形状给 gcc 的"未知对象"保守值：最大档（0/1）`(size_t)-1`、最小档（2/3）`0`。`assume_aligned` 返回指针本身（`void *`），对齐/偏移实参照常求值后丢弃 |
-| `__builtin_popcount/clz/ctz`（含 `l`/`ll`，以及 `ffs`/`parity`/`clrsb`） | **本来就可用**（无需改动） | 由 `lib/builtin.c` 以普通函数实现（查表 + SWAR），链接期从 `libtcc1.a` 解析。实测 15 个取值与 gcc 16.2 逐值一致（`181_c23_gnu_bit_builtins`）。唯一差异：**不是常量表达式** —— gcc 会折叠，`static_assert(__builtin_popcount(0xffu)==8)` / `enum` 在 gcc 通过而在 tcc 报"不是常量"，数组维度写法两边都通过 |
-| `__builtin_add_overflow` 系列 | **已完成**（含 `sub`/`mul` 与 `_p` 形式） | 前端只负责求值、"按各自符号性扩展到 64 位"、把类型打包成 `meta`，再由 `libtcc1.a` 里的 `__tcc_{add,sub,mul}_overflow` 做判定（与 popcount 同一套设计）。助手算法：加/减用 `(lo, hi)` 表示精确结果（`hi ∈ {-2..1}`，65 位），乘用 32 位肢体拆出 128 位积再按符号取补。**不支持** `_Bool*` 目标（gcc 同样拒绝："has pointer to boolean type"）。与 gcc 差分：手工边界矩阵 39 行 + 随机类型对矩阵（8×8 目标/操作数类型 × 3 组值 × 三运算 = 576 行）**逐行一致** |
+| `__builtin_popcount/clz/ctz`（含 `l`/`ll`，以及 `ffs`/`parity`/`clrsb`） | **已完成** | 运行期由 `lib/builtin.c` 以普通函数实现（查表 + SWAR），链接期从 `libtcc1.a` 解析；**常量实参在前端折叠**（18 个名字都是关键字），所以 `static_assert(__builtin_popcount(0xffu)==8)`、`enum`、数组维度三种写法与 gcc 一致。未定义情形（`clz(0)`/`ctz(0)`）不折叠，仍走原运行期代码，避免出现第二个答案。三方核对 129 例：折叠值 = 运行期值 = gcc |
+| `__builtin_add_overflow` 系列 | **已完成**（含 `sub`/`mul` 与 `_p` 形式） | 前端只负责求值、"按各自符号性扩展到 64 位"、把类型打包成 `meta`，再由 `libtcc1.a` 里的 `__tcc_{add,sub,mul}_overflow` 做判定（与 popcount 同一套设计）。助手算法：加/减用 `(lo, hi)` 表示精确结果（`hi ∈ {-2..1}`，65 位），乘用 32 位肢体拆出 128 位积再按符号取补。**不支持** `_Bool*` 目标（gcc 同样拒绝："has pointer to boolean type"）。与 gcc 差分：手工边界矩阵 39 行 + 随机类型对矩阵（8×8 目标/操作数类型 × 3 组值 × 三运算 = 576 行）**逐行一致**；`include/stdckdint.h` 由这三个内建实现 |
 
 `object_size` 的已知差异（有意，且方向安全）：gcc 会做真正的对象大小分析，`s.arr`/`&i`/`buf+2`/`(char*)buf` 都能给出"到外层对象末尾"的字节数，tcc 一律返回保守值。只对"直接命名整个数组"给精确值，因为那是唯一能保证"整个对象 == 所求对象"的形状；给错的具体数字比给"未知"更危险（`-D_FORTIFY_SOURCE` 的 `__memcpy_chk` 依赖 `(size_t)-1` 表示"不要检查"）。另一个方向上的差异是 tcc **更宽松**：gcc 把 `__builtin_object_size` 视为非常量表达式，`static_assert`/`enum` 里用会报错，tcc 接受（因为它最终就是一个常量），数组维度写法两边都接受。
 
-两个已落地项的**代价**（有意接受，不是缺陷）：bswap 走前端掩码/移位/或，x86_64 上 `unsigned f32(unsigned x){return __builtin_bswap32(x);}` 生成约 19 条指令，而 gcc 后端直接发 1 条 `bswap`。tcc 的定位是"编译快、代码朴素"，且加后端快速路径需要给 5 个后端各加一个单目运算派发点（`gen_opi`/`gen_opl` 目前没有单目入口），已单列为后续项。行为正确性不受影响。
+**代码质量**（原先是"接受代价"，现已修）：bswap 一度走前端掩码/移位/或，x86_64 上 `unsigned f32(unsigned x){return __builtin_bswap32(x);}` 生成约 19 条指令而 gcc 发 1 条 `bswap`。现在 x86_64/i386/arm64/arm 四个后端各实现 `gen_bswap()` 直接发目标指令（见上表），riscv64 无 Zbb 保证保留前端后备。测量方式：`objdump`/`llvm-objdump` 反汇编生成的目标文件。
 
 明确不做：`__builtin_shufflevector`、`__builtin_convertvector`（要求向量类型，tcc 无）。
 
 
 ---
+
+## 6.3 C23 一致性扫描（2026-11-17，T6 来源）
+
+§6.1/§6.2 的结论来自"点名 15 个内建"这类定向探测。补完内建后又做了一次**无预设**的扫描：38 条 C23 片段，每条都同时用 `gcc -std=c23` 与 `tcc -std=c23` 编译并运行，比对"能否编译 + 运行输出"。脚本留在 `.bench/t7/sweep.py`（未跟踪），结果从 21/38 一致修到 34/38。
+
+修掉的（T6.1–T6.10，详见 `C23-TASKS.md`）：`__has_c_attribute`、`__has_embed`、`#embed` 的 `limit`/`prefix`/`suffix`、`[[unsequenced]]`/`[[reproducible]]`、`constexpr` 聚合、`sizeof(nullptr)`、`stdckdint.h`、位内建常量折叠、`_BitInt` 诊断文案、bswap 后端指令。
+
+剩余不一致：
+- **有意保留**：`__has_c_attribute(gnu::packed)` → tcc 0 / gcc 1。tcc 没有属性命名空间，`[[gnu::packed]]` 也仍报错。
+- **文案不同、行为一致**（`va_opt` 用例本身写错、`bitint_neg_width`/`bitint_zero_width`、`nullptr_t` 需 `<stddef.h>`）：两边都报错，只是措辞不同。
+
+方法上的教训：**"编译通过"不能作为支持某特性的证据**（未知 `__builtin_*` 会退化成隐式声明）；同样，**"两边都报错"也不算一致**，必须看错误类别是否对应。扫描里两次把我自己的探针写错当成了编译器差异（`printf` 实参求值顺序、零长数组越界读），所以每条差异都要能单独复现才下结论。
 
 ## 7. 风险
 
@@ -239,12 +251,14 @@ tcc 的 `tests2` 已经具备本文需要的一切：
 
 ---
 
-## 8. 建议执行顺序（最小切片）
+## 8. 执行顺序与实际进度（2026-11-17 收口）
 
-1. **T0 全部**（一个 PR）：诚实化 + 负向测试基建。不动任何语法，风险最低，立即消除"错编还绿"。
-2. **T1 全部**（一个 PR）：预处理/词法，零后端影响。
-3. **T2.1–T2.4**（语法糖，零后端）→ **T2.5–T2.6**。
-4. **T3.1**（`auto`）→ **T3.2**（`constexpr` 对象）→ **T3.3**（属性诊断）。
-5. **T4.1–T4.3**（`_BitInt` 单后端）→ **T4.4**（其余后端）→ **T4.5**（ABI）。
+1. **T0 全部** — 完成（诚实化 + 负向测试基建）。
+2. **T1 全部** — 完成（预处理/词法）。
+3. **T2.1–T2.6** — 完成（语法糖与属性）。
+4. **T3.1–T3.3** — 完成（`auto`、`constexpr` 对象、属性诊断）。
+5. **T4.1–T4.5** — 完成（`_BitInt` ≤64 五后端可见行为一致，`N > 64` 显式报错）。
+6. **T5.1–T5.5** — 完成（GNU 内建有界子集 + `stdckdint.h`）。
+7. **T6.1–T6.11** — 完成（一致性扫描补漏，见 §6.3）。
 
-T0+T1+T2 完成后，实际效果是：现代头文件与 `nullptr`/`[[attr]]`/`bool`/`static_assert`/`typeof_unqual`/数字分隔符 风格的真实代码基本可编，且**任何编不过的情况都会明确报错**——这比"标准条款覆盖率"更接近使用者的收益。
+T0+T1+T2 之后的实际效果就是原先预期的那句话：现代头文件与 `nullptr`/`[[attr]]`/`bool`/`static_assert`/`typeof_unqual`/数字分隔符风格的真实代码基本可编，且**任何编不过的情况都会明确报错**。逐项状态与提交哈希见 `C23-TASKS.md`。
