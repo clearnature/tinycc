@@ -147,6 +147,8 @@ static int constexpr_seen;
 /* set by parse_btype() when C23 'auto' was used as a type specifier;
    decl() then infers the type from the initializer */
 static int auto_decl;
+/* [[fallthrough]] seen and not yet followed by a case/default label */
+static int pending_fallthrough;
 /* [[nodiscard]] support without touching vtop->sym: block() marks that the
    value of the statement expression will be discarded, the call generation
    notes a nodiscard callee whose result is the whole statement, and the
@@ -3987,8 +3989,14 @@ static void parse_std_attribute(AttributeDef *ad)
             ad->f.func_nodiscard = 1;
         else if (0 == strcmp(get_tok_str(t, NULL), "deprecated"))
             ad->a.deprecated = 1;
-        else if (0 == strcmp(get_tok_str(t, NULL), "maybe_unused")
-                 || 0 == strcmp(get_tok_str(t, NULL), "fallthrough"))
+        else if (0 == strcmp(get_tok_str(t, NULL), "fallthrough")) {
+            /* C23: only valid inside a switch, where it must be followed by
+               a case or default label; block() checks the follow-up. */
+            if (!cur_switch)
+                tcc_error("invalid use of attribute 'fallthrough'");
+            pending_fallthrough = file->line_num;
+        }
+        else if (0 == strcmp(get_tok_str(t, NULL), "maybe_unused"))
             ; /* accepted, no analysis behind it yet */
         else
             tcc_error("unknown attribute '%s'", get_tok_str(t, NULL));
@@ -7429,6 +7437,12 @@ static void block(int flags)
     Sym *s;
 
 again:
+    if (pending_fallthrough) {
+        if (tok != TOK_CASE && tok != TOK_DEFAULT)
+            tcc_warning("attribute 'fallthrough' not preceding a case label"
+                        " or default label");
+        pending_fallthrough = 0;
+    }
     t = tok;
     /* If the token carries a value, next() might destroy it. Only with
        invalid code such as f(){"123"4;} */

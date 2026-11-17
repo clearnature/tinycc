@@ -1,0 +1,2 @@
+173_c23_fallthrough_place.c:29: warning: attribute 'fallthrough' not preceding a case label or default label
+3 0

@@ -243,13 +243,17 @@
 
 ### T3.3 属性诊断语义
 
-- 状态：**完成**（`deprecated` 告警、`nodiscard` 告警、`fallthrough` 语句接受；仅"`fallthrough` 位置错误告警"未做）
+- 状态：**完成**（`deprecated` 告警、`nodiscard` 告警、`fallthrough` 语句接受与位置检查）
 - 落点：`tcc.h`（`SymAttr.deprecated`、`FuncAttr.func_nodiscard`）、`tccgen.c` 的 `parse_std_attribute()`、`merge_symattr()`、`merge_funcattr()`、`decl()`、`primary()`
 - `deprecated`：引用符号时告警（`primary()` 的 `tok_identifier` 分支，`vtop->sym = s;` 之后），函数与变量都覆盖
 - 两处必须一起改，否则标志根本到不了符号：
   1. `parse_btype()` 开头 `memset(ad, 0, sizeof(AttributeDef))` 会擦掉"声明说明符之前的属性" → 新增 `adpre` 单独收集，`ad = adbase` 之后 `merge_attr(&ad, &adpre)`
   2. `merge_symattr()`/`merge_funcattr()` 是**逐字段复制**，新加的位不会自动带上 → 必须显式加 `sa->deprecated |= sa1->deprecated` / `fa->func_nodiscard = 1`
-- `fallthrough`：`[[fallthrough]];` 作为语句已被接受（属性 + 空声明），控制流与 gcc 一致（`f(1)` 得 3）。未做"位置错误告警"
+- `fallthrough`：`[[fallthrough]];` 作为语句接受，控制流与 gcc 一致；**位置检查已实现**：
+  - `parse_std_attribute()` 里遇到 `fallthrough`：`!cur_switch` → `tcc_error("invalid use of attribute 'fallthrough'")`（gcc 同为 error）；否则记 `pending_fallthrough`
+  - `block()` 的 `again:`（每条语句起点）检查：下一个 token 不是 `TOK_CASE`/`TOK_DEFAULT` → `warning: attribute 'fallthrough' not preceding a case label or default label`（文案与 gcc 相同），然后清标志
+  - 未做：跨 `[[fallthrough]]` 与 `case` 之间插入声明等边界细化（gcc 也接受）
+  - 行号差异（已知、可接受）：tcc 报**属性语句的下一条语句行**（`again:` 处 `tok` 已是下一个 token），gcc 报属性所在行
 - **`nodiscard` 已生效**，做法（踩过两次坑后定稿）：
   1. `block()` 的丢弃路径置 `stmt_discard=1`（save/restore），调用分支在 `tok == ';'` 且被调函数带 nodiscard 时记 `pending_nodiscard` 与名字
   2. 丢弃点再判 `(vtop->type.t & VT_BTYPE) != VT_VOID`——`(void)f();` 的 cast 已把类型变成 void，于是被正确抑制
@@ -258,7 +262,7 @@
   5. 名字要用 `s->v & ~SYM_FIELD`（符号名带 `SYM_FIELD` 标记），且需在调用现场 `tcc_strdup` 下来——token id 到丢弃点已不可打印
   6. `VT_` 位不能用：`0x2000` 落在 `VT_TYPE` 掩码内（`VT_TYPE = ~(VT_STORAGE|VT_STRUCT_MASK)`），会污染类型比较
 - 验收（已实测）：`[[deprecated("…")]]` 函数/变量各触发一次警告，输出与 gcc 相同的 `1 2 7 3`，gcc 亦为 2 条 warning
-- 用例：`169_c23_deprecated_fallthrough`、`170_c23_nodiscard`（`.expect` 均手写，含诊断 + 程序输出）
+- 用例：`169_c23_deprecated_fallthrough`、`170_c23_nodiscard`、`173_c23_fallthrough_place`（`.expect` 均手写，含诊断 + 程序输出）
 
 ### T4.1–T4.5 `_BitInt`
 
