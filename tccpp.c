@@ -1917,6 +1917,7 @@ ST_FUNC void tccpp_putfile(const char *filename)
 typedef struct EmbedParams {
     int limit;          /* -1 when the parameter is absent */
     CString prefix, suffix;
+    CString if_empty;   /* emitted instead of prefix/bytes/suffix when empty */
 } EmbedParams;
 
 /* the file name is on tok: check the delimiter and copy the name out.
@@ -2041,6 +2042,7 @@ static void parse_embed_params(EmbedParams *p)
     p->limit = -1;
     cstr_new(&p->prefix);
     cstr_new(&p->suffix);
+    cstr_new(&p->if_empty);
     while (tok != TOK_LINEFEED && tok != TOK_EOF && tok != 0 && tok != ')') {
         const char *name;
         if (tok < TOK_IDENT)
@@ -2055,6 +2057,8 @@ static void parse_embed_params(EmbedParams *p)
             embed_render_list(&p->prefix);
         else if (0 == strcmp(name, "suffix"))
             embed_render_list(&p->suffix);
+        else if (0 == strcmp(name, "if_empty"))
+            embed_render_list(&p->if_empty);
         else
             tcc_error("unknown '#embed' parameter '%s'", name);
         next();     /* step past the closing ')' */
@@ -2065,6 +2069,7 @@ static void embed_params_free(EmbedParams *p)
 {
     cstr_free(&p->prefix);
     cstr_free(&p->suffix);
+    cstr_free(&p->if_empty);
 }
 
 /* Number of bytes the resource contributes after 'limit'. */
@@ -2092,6 +2097,21 @@ static void embed_emit(TCCState *s1, FILE *f, EmbedParams *p)
 
     fseek(f, 0, SEEK_SET);
     if (n == 0) {
+        /* An empty resource emits if_empty() and nothing else: the prefix and
+           suffix are not expanded, which is what gcc does. */
+        if (p->if_empty.data && p->if_empty.data[0]) {
+            cstr_new(&cs);
+            cstr_cat(&cs, p->if_empty.data, -1);
+            fclose(f);
+            tcc_open_bf(s1, ":embed:", cs.size);
+            memcpy(file->buffer, cs.data, cs.size);
+            cstr_free(&cs);
+            if (s1->include_stack_ptr
+                    >= s1->include_stack + INCLUDE_STACK_SIZE)
+                tcc_error("#embed recursion too deep");
+            *s1->include_stack_ptr++ = file->prev;
+            return;
+        }
         fclose(f);
         return;
     }
@@ -2123,11 +2143,17 @@ static void embed_emit(TCCState *s1, FILE *f, EmbedParams *p)
 static void parse_embed(TCCState *s1)
 {
     char name[1024];
-    int delim;
+    int delim, saved_flags;
     FILE *f;
     EmbedParams p;
 
-    next_nomacro();
+    /* C23 expands macros in the file name.  next() does the expansion, but it
+       would also convert the string token to its decoded value, losing the
+       '"' versus '<' delimiter, so keep that conversion off for this read. */
+    saved_flags = parse_flags;
+    parse_flags &= ~(PARSE_FLAG_TOK_STR | PARSE_FLAG_TOK_NUM);
+    next();
+    parse_flags = saved_flags;
     delim = embed_read_name(name, sizeof name);
     next();
     parse_embed_params(&p);
