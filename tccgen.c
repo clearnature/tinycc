@@ -141,6 +141,9 @@ static int type_qualifiers(CType *type);
 static void parse_btype_qualify(CType *type, int qualifiers);
 static int is_compatible_types(CType *type1, CType *type2);
 static int parse_btype(CType *type, AttributeDef *ad, int ignore_label);
+/* set by parse_btype() when a C23 'constexpr' specifier was seen, consumed
+   by decl() right after the declarator is known */
+static int constexpr_seen;
 static CType *type_decl(CType *type, AttributeDef *ad, int *v, int td);
 static void parse_expr_type(CType *type);
 static void init_putv(init_params *p, CType *type, unsigned long c);
@@ -4905,6 +4908,13 @@ static int parse_btype(CType *type, AttributeDef *ad, int ignore_label)
         case TOK_BOOL_C23:
             u = VT_BOOL;
             goto basic_type;
+        case TOK_CONSTEXPR:
+            /* C23: constexpr implies const and requires an initializer; the
+               initializer is turned into a constant symbol in decl() */
+            constexpr_seen = 1;
+            t |= VT_CONSTANT;
+            next();
+            break;
         case TOK_COMPLEX:
             tcc_error("_Complex is not yet supported");
         case TOK_FLOAT:
@@ -9127,6 +9137,29 @@ static int decl(int l)
                     if (tok == '=')
                         has_init = 1;
 
+                    if (constexpr_seen) {
+                        /* C23 constexpr object: it must be initialised, and
+                           its value has to be usable in constant expressions
+                           such as array bounds.  Represent it the way enum
+                           constants are represented: a symbol whose type is
+                           VT_ENUM_VAL and whose value lives in enum_val.
+                           The object itself is not addressable this way. */
+                        long long cv;
+                        constexpr_seen = 0;
+                        if (!has_init)
+                            tcc_error("'constexpr' requires an initialized"
+                                      " data declaration");
+                        if ((type.t & VT_ARRAY) || (type.t & VT_BTYPE) == VT_FUNC)
+                            tcc_error("invalid type for 'constexpr'");
+                        next();
+                        cv = expr_const();
+                        type.t = (type.t & ~(VT_CONSTANT|VT_EXTERN|VT_STATIC))
+                            | VT_ENUM_VAL;
+                        sym = sym_push(v, &type, VT_CONST, 0);
+                        sym->enum_val = cv;
+                        goto constexpr_done;
+                    }
+
                     if (((type.t & VT_EXTERN) && (!has_init || l != VT_CONST))
 		        || (type.t & VT_BTYPE) == VT_FUNC
                         /* as with GCC, uninitialized global arrays with no size
@@ -9164,6 +9197,7 @@ static int decl(int l)
                                         esym->st_value, esym->st_size, 1);
                     }
                 }
+            constexpr_done:
                 if (tok != ',') {
                     if (l == VT_JMP)
                         return has_init ? v : 1;

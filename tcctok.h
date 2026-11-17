@@ -50,6 +50,7 @@
      DEF(TOK_FLOAT, "float")
      DEF(TOK_DOUBLE, "double")
      DEF(TOK_BOOL, "_Bool")
+     DEF(TOK_CONSTEXPR, "constexpr") /* C23 */
      DEF(TOK_COMPLEX, "_Complex")
      DEF(TOK_SHORT, "short")
      DEF(TOK_LONG, "long")

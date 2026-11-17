@@ -226,9 +226,15 @@
 
 ### T3.2 `constexpr` 对象
 
-- 落点：`tccgen.c` + 常量求值 + `.rodata`
+- 状态：**已完成（常量语义；对象本身不可取地址）**
+- 落点：`tcctok.h`（`TOK_CONSTEXPR`）、`tccgen.c` 的 `parse_btype()`（置 `constexpr_seen` 与 `VT_CONSTANT`）与 `decl()`（转成常量符号，新增 `constexpr_done:` 标签）
+- 做法：符号按 enum 常量的方式表示（`type.t |= VT_ENUM_VAL`、值放 `enum_val`、`sym_push(..., VT_CONST, ...)`），这样数组维、`case` 标签都能直接折叠
 - gcc 参照：`c/c-parser.cc:733`（RID_CONSTEXPR 分支）
-- 验收：`constexpr int N = 3; int a[N];`；未初始化报错（文案对齐 gcc 的 `requires an initialized data declaration`）；**函数形式明确报不支持**（gcc 16 亦不支持）
+- 验收（已实测，逐项与 gcc 一致）：`constexpr int N = 5; int a[N];` → 元素数 5；`constexpr int M = N * 2;` → 10；`constexpr unsigned char UC = 200;` → 200；函数内 `constexpr int K = 4; int b[K];` → 4
+- 错误路径：未初始化 → `'constexpr' requires an initialized data declaration`（文案与 gcc 相同）
+- 已知偏差：对象按常量处理，**没有实体存储** → 取地址 `&N` 不可用；数组/函数类型直接报 `invalid type for 'constexpr'`
+- 未做：`constexpr` 函数（gcc 16 同样不支持，见 §6 不做项）
+- 用例：`168_c23_constexpr`（`.expect` 由 gcc 生成）
 
 ### T3.3 属性诊断语义
 

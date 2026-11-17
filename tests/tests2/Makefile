@@ -109,6 +109,7 @@ endif
 166_c23_thread_local.test : FLAGS += -std=c23
 166_c23_thread_local.test : NORUN = true # -run has no TLS support
 167_c23_attributes.test : FLAGS += -std=c23
+168_c23_constexpr.test : FLAGS += -std=c23
 
 GEN-ALWAYS =
 # GEN-ALWAYS += 95_bitfields.expect # does not work
