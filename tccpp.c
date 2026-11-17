@@ -53,6 +53,7 @@ static int pp_debug_tok, pp_debug_symv;
 static int pp_counter;
 static void tok_print(const int *str, const char *msg, ...);
 static void next_nomacro(void);
+static int parse_has_embed(TCCState *s1);
 static void parse_number(const char *p);
 static void parse_string(const char *p, int len);
 
@@ -1589,6 +1590,9 @@ static int expr_preprocess(TCCState *s1)
         } else if (tok == TOK___HAS_C_ATTRIBUTE) {
             c = parse_has_c_attribute();
             goto c_number;
+        } else if (tok == TOK___HAS_EMBED) {
+            c = parse_has_embed(s1);
+            goto c_number;
         } else if (tok == TOK___HAS_INCLUDE ||
                    tok == TOK___HAS_INCLUDE_NEXT) {
             t = tok;
@@ -1906,38 +1910,53 @@ ST_FUNC void tccpp_putfile(const char *filename)
     tcc_debug_newfile(tcc_state);
 }
 
-/* C23 #embed: read the named file and replace the directive with the bytes
-   of the file as a comma separated list of integer constants.  The file is
-   searched like a "" include, i.e. the including file's directory first,
-   then the include paths.  The bytes are pushed as a nested input buffer so
-   that they are lexed as ordinary tokens. */
-static void parse_embed(TCCState *s1)
-{
-    char name[1024], buf[1024], *p;
-    int c, i, ch;
-    FILE *f;
-    CString cs;
+/* C23 #embed and __has_embed share the file lookup and the parameter list
+   (limit / prefix / suffix).  The bytes become a nested input buffer holding
+   a comma separated list of integer constants, so that they are lexed as
+   ordinary tokens. */
+typedef struct EmbedParams {
+    int limit;          /* -1 when the parameter is absent */
+    CString prefix, suffix;
+} EmbedParams;
 
-    next_nomacro();
-    if (tok != TOK_PPSTR || (tokc.str.data[0] != '"'
-                             && tokc.str.data[0] != '<'))
+/* the file name is on tok: check the delimiter and copy the name out.
+   Returns the opening delimiter (either '"' or '<').  Inside #if the string
+   has already been decoded by parse_string(), so it arrives as TOK_STR with
+   the quotes stripped and only the '"' form is possible there. */
+static int embed_read_name(char *name, int size)
+{
+    int c, len;
+
+    if (tok == TOK_STR) {
+        pstrncpy(name, size, tokc.str.data, tokc.str.size - 1);
+        return '"';
+    }
+    if (tok != TOK_PPSTR
+        || (tokc.str.data[0] != '"' && tokc.str.data[0] != '<'))
         tcc_error("'#embed' expects \"FILENAME\" or <FILENAME>");
     c = tokc.str.data[0];
-    i = tokc.str.size - 1;
-    if (i < 3 || tokc.str.data[i - 1] != (c == '"' ? '"' : '>'))
+    len = tokc.str.size - 1;
+    if (len < 3 || tokc.str.data[len - 1] != (c == '"' ? '"' : '>'))
         tcc_error("'#embed' expects \"FILENAME\" or <FILENAME>");
-    pstrncpy(name, sizeof name, tokc.str.data + 1, i - 2);
-    next_nomacro();
-    skip_to_eol(1);
+    pstrncpy(name, size, tokc.str.data + 1, len - 2);
+    return c;
+}
 
-    f = NULL;
+/* Open the named resource, searching like a "" include: an absolute name is
+   used as is, '"' names look in the including file's directory, then the
+   include paths, then the system ones.  Returns NULL when nothing matches. */
+static FILE *embed_open(TCCState *s1, const char *name, int delim)
+{
+    char buf[1024], *p;
+    int i;
+
     for (i = 0;; ++i) {
         if (i == 0) {
             if (!IS_ABSPATH(name))
                 continue;
             buf[0] = '\0';
         } else if (i == 1) {
-            if (c != '"')
+            if (delim != '"')
                 continue;
             p = file->true_filename;
             pstrncpy(buf, sizeof buf, p, tcc_basename(p) - p);
@@ -1948,33 +1967,149 @@ static void parse_embed(TCCState *s1)
             else if (k < s1->nb_sysinclude_paths)
                 p = s1->sysinclude_paths[k];
             else
-                tcc_error("embed file '%s' not found", name);
+                return NULL;
             pstrcpy(buf, sizeof buf, p);
             pstrcat(buf, sizeof buf, "/");
         }
         pstrcat(buf, sizeof buf, name);
-        if ((f = fopen(buf, "rb")) != NULL)
-            break;
+        {
+            FILE *f = fopen(buf, "rb");
+            if (f)
+                return f;
+        }
     }
+}
 
-    /* Materialise the bytes as a nested input buffer holding the numbers.
-       tcc_open_bf() takes the length without a terminator and puts CH_EOB
-       right after it, and the lexer pops back to the outer file at EOF. */
-    cstr_new(&cs);
-    i = 0;
-    ch = fgetc(f);
-    while (ch != EOF) {
-        if (i++)
-            cstr_ccat(&cs, ',');
-        cstr_printf(&cs, "%d", ch);
-        ch = fgetc(f);
+/* Render the tokens of prefix(...) / suffix(...) back to text, one space
+   apart, and consume through the closing ')'.  They are emitted verbatim:
+   a prefix that does not end in a comma produces invalid code, exactly as
+   it does with gcc. */
+static void embed_render_list(CString *cs)
+{
+    int par = 0;
+
+    for (;;) {
+        next();
+        if (tok == 0 || tok == TOK_EOF || tok == TOK_LINEFEED)
+            tcc_error("unterminated '#embed' parameter");
+        if (tok == ')') {
+            if (par == 0)
+                return;
+            par--;
+        } else if (tok == '(') {
+            par++;
+        }
+        cstr_printf(cs, "%s ", get_tok_str(tok, &tokc));
     }
-    fclose(f);
-    if (i == 0) {
-        /* an empty file contributes no tokens at all */
-        cstr_free(&cs);
+}
+
+/* limit(N): N is evaluated as a preprocessing constant expression, the same
+   way #if does, so a macro or an undeclared identifier behaves identically
+   to gcc.  Consumes through the closing ')'. */
+static int embed_parse_limit(void)
+{
+    TokenString *ts = tok_str_alloc();
+    int par = 0, c;
+
+    for (;;) {
+        next();
+        if (tok == 0 || tok == TOK_EOF || tok == TOK_LINEFEED)
+            tcc_error("unterminated '#embed' parameter");
+        if (tok == ')') {
+            if (par == 0)
+                break;
+            par--;
+        } else if (tok == '(') {
+            par++;
+        }
+        tok_str_add_tok(ts);
+    }
+    tok_str_add(ts, TOK_EOF);
+    begin_macro(ts, 1);
+    next();
+    c = expr_const();
+    end_macro();
+    if (c < 0)
+        tcc_error("'#embed' parameter 'limit' is negative");
+    return c;
+}
+
+/* Parse the parameter list; on entry tok is the first token after the file
+   name, on return it is the line terminator (or ')' inside #if). */
+static void parse_embed_params(EmbedParams *p)
+{
+    p->limit = -1;
+    cstr_new(&p->prefix);
+    cstr_new(&p->suffix);
+    while (tok != TOK_LINEFEED && tok != TOK_EOF && tok != 0 && tok != ')') {
+        const char *name;
+        if (tok < TOK_IDENT)
+            tcc_error("invalid '#embed' parameter");
+        name = get_tok_str(tok, NULL);
+        next();
+        if (tok != '(')
+            expect("'('");
+        if (0 == strcmp(name, "limit"))
+            p->limit = embed_parse_limit();
+        else if (0 == strcmp(name, "prefix"))
+            embed_render_list(&p->prefix);
+        else if (0 == strcmp(name, "suffix"))
+            embed_render_list(&p->suffix);
+        else
+            tcc_error("unknown '#embed' parameter '%s'", name);
+        next();     /* step past the closing ')' */
+    }
+}
+
+static void embed_params_free(EmbedParams *p)
+{
+    cstr_free(&p->prefix);
+    cstr_free(&p->suffix);
+}
+
+/* Number of bytes the resource contributes after 'limit'. */
+static long embed_byte_count(FILE *f, int limit)
+{
+    long n = 0;
+    int ch;
+
+    while ((ch = fgetc(f)) != EOF) {
+        if (limit >= 0 && n >= limit)
+            break;
+        n++;
+    }
+    return n;
+}
+
+/* Turn the resource into a nested input buffer.  The prefix and suffix
+   text is only emitted when there is at least one byte, which is what gcc
+   does for an empty resource. */
+static void embed_emit(TCCState *s1, FILE *f, EmbedParams *p)
+{
+    CString cs;
+    long n = embed_byte_count(f, p->limit);
+    int ch, first = 1;
+
+    fseek(f, 0, SEEK_SET);
+    if (n == 0) {
+        fclose(f);
         return;
     }
+    cstr_new(&cs);
+    /* -1 copies just the text: with 0 the terminating NUL would land in the
+       middle of the buffer and the lexer would choke on it */
+    cstr_cat(&cs, p->prefix.data ? p->prefix.data : "", -1);
+    while (n-- > 0 && (ch = fgetc(f)) != EOF) {
+        if (!first)
+            cstr_ccat(&cs, ',');
+        cstr_printf(&cs, "%d", ch);
+        first = 0;
+    }
+    cstr_cat(&cs, p->suffix.data ? p->suffix.data : "", -1);
+    fclose(f);
+
+    /* tcc_open_bf() takes the length without a terminator and puts CH_EOB
+       right after it, and the lexer pops back to the outer file at EOF. */
     tcc_open_bf(s1, ":embed:", cs.size);
     memcpy(file->buffer, cs.data, cs.size);
     cstr_free(&cs);
@@ -1983,6 +2118,58 @@ static void parse_embed(TCCState *s1)
     if (s1->include_stack_ptr >= s1->include_stack + INCLUDE_STACK_SIZE)
         tcc_error("#embed recursion too deep");
     *s1->include_stack_ptr++ = file->prev;
+}
+
+static void parse_embed(TCCState *s1)
+{
+    char name[1024];
+    int delim;
+    FILE *f;
+    EmbedParams p;
+
+    next_nomacro();
+    delim = embed_read_name(name, sizeof name);
+    next();
+    parse_embed_params(&p);
+    skip_to_eol(1);
+    f = embed_open(s1, name, delim);
+    if (!f)
+        tcc_error("embed file '%s' not found", name);
+    embed_emit(s1, f, &p);
+    embed_params_free(&p);
+}
+
+/* C23 __has_embed: FOUND (1) when the resource yields bytes, EMPTY (2) when
+   it exists but contributes nothing, NOT_FOUND (0) otherwise.  The token is
+   left on ')' like __has_include. */
+static int parse_has_embed(TCCState *s1)
+{
+    char name[1024];
+    int delim, status, n;
+    long bytes;
+    FILE *f;
+    EmbedParams p;
+
+    next();
+    if (tok != '(')
+        expect("'('");
+    next();
+    delim = embed_read_name(name, sizeof name);
+    next();
+    parse_embed_params(&p);
+    if (tok != ')')
+        expect("')'");
+    f = embed_open(s1, name, delim);
+    if (!f) {
+        status = 0;                     /* __STDC_EMBED_NOT_FOUND__ */
+    } else {
+        bytes = embed_byte_count(f, p.limit);
+        fclose(f);
+        status = bytes ? 1 : 2;         /* FOUND / EMPTY */
+    }
+    n = status;
+    embed_params_free(&p);
+    return n;
 }
 
 /* is_bof is true if first non space token at beginning of file */
@@ -3958,6 +4145,13 @@ static void tcc_predefs(TCCState *s1, CString *cs, int is_asm)
       /* C89 has no __STDC_VERSION__ */
       if (s1->cversion)
           cstr_printf(cs, "#define __STDC_VERSION__ %dL\n", s1->cversion);
+      /* #embed / __has_embed are available in every mode, so are the
+         result constants C23 defines for them */
+      cstr_cat(cs,
+        "#define __STDC_EMBED_NOT_FOUND__ 0\n"
+        "#define __STDC_EMBED_FOUND__ 1\n"
+        "#define __STDC_EMBED_EMPTY__ 2\n"
+        , -1);
       cstr_cat(cs,
         /* load more predefs and __builtins */
 #if CONFIG_TCC_PREDEFS
