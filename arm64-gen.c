@@ -1934,17 +1934,19 @@ static void arm64_gen_opil(int op, uint32_t l)
 }
 
 /* byte swap of vtop's value: size is 2, 4 or 8.  rev works in place, so the
-   same register number goes in both fields. */
+   same register goes in both fields: Rd is bits 4:0 and Rn is bits 9:5.
+   Putting the source in Rm's position (bits 20:16) assembles to garbage, but
+   is invisible as long as the register happens to be 0. */
 ST_FUNC void gen_bswap(int size)
 {
     int r = gv(RC_INT);
 
     if (size == 2)
-        o(0x5ac00400 | r << 16 | r);        /* rev16 wR, wR */
+        o(0x5ac00400 | r << 5 | r);         /* rev16 wR, wR */
     else if (size == 8)
-        o(0xdac00c00 | r << 16 | r);        /* rev xR, xR */
+        o(0xdac00c00 | r << 5 | r);         /* rev xR, xR */
     else
-        o(0x5ac00800 | r << 16 | r);        /* rev wR, wR */
+        o(0x5ac00800 | r << 5 | r);         /* rev wR, wR */
 }
 
 ST_FUNC void gen_opi(int op)

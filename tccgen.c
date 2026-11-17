@@ -5239,7 +5239,11 @@ the_end:
         t = VT_INT;
     }
     if (tcc_state->char_is_unsigned) {
-        if ((t & (VT_DEFSIGN|VT_BTYPE)) == VT_BYTE)
+        /* plain char is unsigned on ARM, but a _BitInt(N) with N <= 8 only
+           borrows VT_BYTE as its container: its signedness is its own, and
+           letting this rule touch it made `_BitInt(4) = 9` stay 9 instead of
+           becoming -7 on the ARM targets. */
+        if ((t & (VT_DEFSIGN|VT_BTYPE)) == VT_BYTE && !(t & VT_BINT))
             t |= VT_UNSIGNED;
     }
     /* VT_LONG is used just as a modifier for VT_INT / VT_LLONG */
