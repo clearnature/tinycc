@@ -232,15 +232,18 @@ tcc 的 `tests2` 已经具备本文需要的一切：
 
 ## 6.3 C23 一致性扫描（2026-11-17，T6 来源）
 
-§6.1/§6.2 的结论来自"点名 15 个内建"这类定向探测。补完内建后又做了一次**无预设**的扫描：38 条 C23 片段，每条都同时用 `gcc -std=c23` 与 `tcc -std=c23` 编译并运行，比对"能否编译 + 运行输出"。脚本留在 `.bench/t7/sweep.py`（未跟踪），结果从 21/38 一致修到 34/38。
+§6.1/§6.2 的结论来自"点名 15 个内建"这类定向探测。补完内建后又做了一次**无预设**的扫描：38 条 C23 片段，每条都同时用 `gcc -std=c23` 与 `tcc -std=c23` 编译并运行，比对"能否编译 + 运行输出 + 诊断正文"。脚本留在 `.bench/t7/sweep.py`（未跟踪），结果从 21/38 一致修到 **37/38**。
 
-修掉的（T6.1–T6.10，详见 `C23-TASKS.md`）：`__has_c_attribute`、`__has_embed`、`#embed` 的 `limit`/`prefix`/`suffix`、`[[unsequenced]]`/`[[reproducible]]`、`constexpr` 聚合、`sizeof(nullptr)`、`stdckdint.h`、位内建常量折叠、`_BitInt` 诊断文案、bswap 后端指令。
+修掉的（T6.1–T6.12，详见 `C23-TASKS.md`）：`__has_c_attribute`、`__has_embed`、`#embed` 的 `limit`/`prefix`/`suffix`、`[[unsequenced]]`/`[[reproducible]]`、`constexpr` 聚合、`sizeof(nullptr)`、`stdckdint.h`、位内建常量折叠、`_BitInt` 诊断文案、bswap 后端指令、`stddef.h` 的 `nullptr_t`/`unreachable`。
 
-剩余不一致：
-- **有意保留**：`__has_c_attribute(gnu::packed)` → tcc 0 / gcc 1。tcc 没有属性命名空间，`[[gnu::packed]]` 也仍报错。
-- **文案不同、行为一致**（`va_opt` 用例本身写错、`bitint_neg_width`/`bitint_zero_width`、`nullptr_t` 需 `<stddef.h>`）：两边都报错，只是措辞不同。
+剩余不一致只有 1 条，且是文案而非行为：`nullptr_t x;` **不包含** `<stddef.h>` 时，gcc 报 `unknown type name 'nullptr_t'`，tcc 报 `';' expected (got 'x')`——两边都拒绝，只是 tcc 对"未知类型名"的诊断一向笼统（这不是 C23 引入的，`foo x;` 同样如此）。加上 `#include <stddef.h>` 后两边行为完全一致（`sizeof(nullptr_t)`=8、与 `nullptr` 比较、`unreachable()`、`__STDC_VERSION_STDDEF_H__`=202311）。
 
-方法上的教训：**"编译通过"不能作为支持某特性的证据**（未知 `__builtin_*` 会退化成隐式声明）；同样，**"两边都报错"也不算一致**，必须看错误类别是否对应。扫描里两次把我自己的探针写错当成了编译器差异（`printf` 实参求值顺序、零长数组越界读），所以每条差异都要能单独复现才下结论。
+另一个有意保留的差异不在这个脚本里：`__has_c_attribute(gnu::packed)` → tcc 0 / gcc 1，因为 tcc 没有属性命名空间。
+
+方法上的教训（写下来避免下次重犯）：
+- **"编译通过"不能当支持某特性的证据**（未知 `__builtin_*` 会退化成隐式声明）。
+- **"两边都报错"不等于一致**，要看错误类别是否对应；反过来，脚本还要**统一 locale（`LC_ALL=C`）并取真正带 `error:` 的那一行**——gcc 会先输出 `In function ...` 上下文行，早期版本因此把 5 条与 gcc 逐字一致的诊断误判成不一致。
+- 探针自己会撒谎：扫描里两次把我自己的探针 bug（`printf` 实参求值顺序、零长数组越界读）当成了编译器差异，所以每条差异都要能单独复现并人工看一眼才下结论。
 
 ## 7. 风险
 

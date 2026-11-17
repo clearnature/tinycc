@@ -12,6 +12,19 @@ typedef __SIZE_TYPE__ uintptr_t;
 typedef union { long long __ll; long double __ld; } max_align_t;
 #endif
 
+/* C23: nullptr_t and the unreachable macro live here, as they do in the
+   stddef.h gcc ships */
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ > 201710L
+#ifndef _GCC_NULLPTR_T
+#define _GCC_NULLPTR_T
+typedef __typeof__(nullptr) nullptr_t;
+#endif
+#ifndef __STDC_VERSION_STDDEF_H__
+#define unreachable() (__builtin_unreachable())
+#define __STDC_VERSION_STDDEF_H__ 202311L
+#endif
+#endif
+
 #ifndef NULL
 #define NULL ((void*)0)
 #endif

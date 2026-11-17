@@ -126,6 +126,7 @@ endif
 184_c23_embed_params.test : FLAGS += -std=c23
 185_c23_stdckdint.test : FLAGS += -std=c23
 186_c23_bit_builtin_fold.test : FLAGS += -std=c23
+189_c23_stddef_nullptr_t.test : FLAGS += -std=c23
 
 GEN-ALWAYS =
 # GEN-ALWAYS += 95_bitfields.expect # does not work

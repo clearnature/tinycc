@@ -81,6 +81,7 @@
 | T6.9 | `_BitInt` 非 ICE 诊断 | S | — | P13 |
 | T6.10 | bswap 后端快速路径 | M | — | P13 |
 | T6.11 | 文档纠错 | S | — | P13 |
+| T6.12 | `stddef.h` 的 `nullptr_t` / `unreachable` | S | T6.6 | P13 |
 
 ---
 
@@ -462,11 +463,16 @@
   - riscv64 无 Zbb 保证 → 保留前端 mask/shift/or（编译期 `#if` 选择，riscv64 构建里不引用 `gen_bswap`，否则 `ST_FUNC` 在单文件构建下报"声明但未定义"）
   - **编码用独立反汇编器（llvm-objdump 23.1.4）验证**，抓到两个错：`0xdac00000` 是 `rbit` 不是 `rev`（`rev w` 是 `0x5ac00800`）；arm 64 位首版用两条 `mov`，第二条读到的是已被覆盖的寄存器
   - 另记：x86 的 `o()` **按小端输出且遇 0 字节即止**，所以 `o(0x66c1)` 会变成 `c1 66`，多字节操作码必须逐字节发
-- **T6.11 文档纠错：完成**（本提交）
+- **T6.11 文档纠错：完成**（`28b869e4`）
   - 删掉/改写三处已被实测推翻的断言：`_BitInt(16)` 算术按容器提升（现为 `-15536`/`sizeof=2`）、`T4.2 状态：未开始`（实际已完成）、`TOK_BITINT` 注释里的 "Exact N-bit wraparound is not modelled yet"
   - `C23-SUPPORT.md` §6.2 里 bswap"约 19 条指令"改为实测的单条指令
+- **T6.12 `stddef.h` 补 C23 的 `nullptr_t` 与 `unreachable`：完成**
+  - C23 把 `nullptr_t` 和 `unreachable()` 放在 `<stddef.h>`；gcc 自带的 stddef.h 有，tcc 的没有 → `#include <stddef.h>` 后用 `nullptr_t` 编不过
+  - 按 gcc 同样的守卫补上：`#if __STDC_VERSION__ > 201710L` 下 `typedef __typeof__(nullptr) nullptr_t;`、`#define unreachable() (__builtin_unreachable())`、`__STDC_VERSION_STDDEF_H__ 202311L`
+  - 与 gcc 一致：`sizeof(nullptr_t)`=8、与 `nullptr` 比较、`unreachable()`、版本宏
+  - 用例：`189_c23_stddef_nullptr_t`
 
-- 用例汇总：`183`–`188` 六个新文件，编号最大的 C23 用例到此为 188
+- 用例汇总：`183`–`189` 七个新文件（`183`–`188` 加 `189_c23_stddef_nullptr_t`），编号最大的 C23 用例到此为 189
 
 
 ---
