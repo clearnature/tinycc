@@ -5855,6 +5855,23 @@ static void parse_atomic(int atok)
     }
 }
 
+/* Width in bits and signedness of an integer type, for the overflow
+   builtins.  Anything that is not a plain integer is rejected, which is
+   also what gcc does with a _Bool or a floating destination. */
+static int ovf_type_width(CType *type, int *sgn, const char *name)
+{
+    int u = (type->t & VT_UNSIGNED) != 0;
+    *sgn = !u;
+    switch (type->t & VT_BTYPE) {
+    case VT_BYTE:  return 8;
+    case VT_SHORT: return 16;
+    case VT_INT:   return 32;
+    case VT_LLONG: return 64;
+    }
+    tcc_error("'%s' requires an integer type", name);
+    return 0;
+}
+
 ST_FUNC void unary(void)
 {
     int n, t, align, size, r;
@@ -6227,6 +6244,81 @@ ST_FUNC void unary(void)
         mk_pointer(&type);
         gen_assign_cast(&type);
         break;
+    case TOK_builtin_add_overflow:
+    case TOK_builtin_sub_overflow:
+    case TOK_builtin_mul_overflow:
+    case TOK_builtin_add_overflow_p:
+    case TOK_builtin_sub_overflow_p:
+    case TOK_builtin_mul_overflow_p:
+    {
+        /* Doing the operation in infinite precision and testing it against
+           the destination range needs 65-bit (add, sub) and 128-bit (mul)
+           intermediates, which tcc has no type for, so the test lives in a
+           libtcc1 helper -- the same arrangement as popcount/clz/ctz.  This
+           side only evaluates the operands, extends them to 64 bits with
+           their own signedness, and passes the types packed in 'meta'. */
+        const char *name = get_tok_str(tok, NULL);
+        int is_p = tok == TOK_builtin_add_overflow_p
+                || tok == TOK_builtin_sub_overflow_p
+                || tok == TOK_builtin_mul_overflow_p;
+        int helper = tok == TOK_builtin_add_overflow
+                       || tok == TOK_builtin_add_overflow_p
+                   ? TOK___tcc_add_overflow
+                   : tok == TOK_builtin_sub_overflow
+                       || tok == TOK_builtin_sub_overflow_p
+                   ? TOK___tcc_sub_overflow : TOK___tcc_mul_overflow;
+        int wt, st, sa, sb, meta;
+        CType ct;
+
+        next();
+        skip('(');
+        expr_eq();
+        ovf_type_width(&vtop->type, &sa, name);
+        ct.ref = NULL;
+        ct.t = VT_LLONG | (sa ? 0 : VT_UNSIGNED);
+        gen_cast(&ct);
+        skip(',');
+        expr_eq();
+        ovf_type_width(&vtop->type, &sb, name);
+        ct.t = VT_LLONG | (sb ? 0 : VT_UNSIGNED);
+        gen_cast(&ct);
+        skip(',');
+        expr_eq();
+        if (is_p) {
+            /* the third argument supplies the destination type only */
+            wt = ovf_type_width(&vtop->type, &st, name);
+            vpop();
+            /* and res is NULL: no store happens */
+            ct.ref = NULL;
+            ct.t = 0;
+            mk_pointer(&ct);
+            vpushi(0);
+            gen_cast(&ct);
+        } else {
+            if ((vtop->type.t & VT_BTYPE) != VT_PTR)
+                tcc_error("argument 3 of '%s' must be a pointer to an "
+                          "integer type", name);
+            wt = ovf_type_width(pointed_type(&vtop->type), &st, name);
+            ct.ref = NULL;
+            ct.t = 0;
+            mk_pointer(&ct);
+            gen_assign_cast(&ct);
+        }
+        skip(')');
+        meta = sa | (sb << 1) | (wt << 8) | (st << 15);
+        vpushi(meta);
+        vpush_helper_func(helper);
+        vrott(5);
+        gfunc_call(4);
+        /* a helper call leaves nothing on the stack: the int it returns lives
+           in the return register and has to be declared here */
+        ct.ref = NULL;
+        ct.t = VT_INT;
+        vpush(&ct);
+        PUT_R_RET(vtop, ct.t);
+        gen_cast_s(VT_BOOL);  /* gcc returns bool: sizeof 1 */
+        break;
+    }
     case TOK_builtin_expect:
 	/* __builtin_expect is a no-op for now */
 	parse_builtin_params(0, "ee");

@@ -195,6 +195,16 @@
      DEF(TOK_builtin_prefetch, "__builtin_prefetch")
      DEF(TOK_builtin_object_size, "__builtin_object_size")
      DEF(TOK_builtin_assume_aligned, "__builtin_assume_aligned")
+     DEF(TOK_builtin_add_overflow, "__builtin_add_overflow")
+     DEF(TOK_builtin_sub_overflow, "__builtin_sub_overflow")
+     DEF(TOK_builtin_mul_overflow, "__builtin_mul_overflow")
+     DEF(TOK_builtin_add_overflow_p, "__builtin_add_overflow_p")
+     DEF(TOK_builtin_sub_overflow_p, "__builtin_sub_overflow_p")
+     DEF(TOK_builtin_mul_overflow_p, "__builtin_mul_overflow_p")
+     /* libtcc1 helpers behind the overflow builtins (see lib/builtin.c) */
+     DEF(TOK___tcc_add_overflow, "__tcc_add_overflow")
+     DEF(TOK___tcc_sub_overflow, "__tcc_sub_overflow")
+     DEF(TOK___tcc_mul_overflow, "__tcc_mul_overflow")
      /*DEF(TOK_builtin_va_list, "__builtin_va_list")*/
 #if defined TCC_TARGET_PE && defined TCC_TARGET_X86_64
      DEF(TOK_builtin_va_start, "__builtin_va_start")

@@ -69,7 +69,7 @@
 | T5.2 | `__builtin_prefetch` | S | — | P11 |
 | T5.3 | `__builtin_object_size` / `__builtin_assume_aligned` | S | — | P12 |
 | T5.4 | `__builtin_popcount/clz/ctz` | S–M | — | P12 |
-| T5.5 | `__builtin_add_overflow` 系列 | M | — | P12 |
+| T5.5 | `__builtin_add/sub/mul_overflow`（含 `_p`） | M | — | P12 |
 
 ---
 
@@ -363,7 +363,7 @@
 
 ### T5.1–T5.5 GNU 内建有界子集
 
-- 状态：**T5.1–T5.3 完成、T5.4 实测已由 `lib/builtin.c` 覆盖**（2026-11-17）；仅 T5.5 待做
+- 状态：**T5.1–T5.5 全部完成**（2026-11-17）
 - 范围来源：`C23-SUPPORT.md` §6.1 的实测。最初把 `nm -u` 里出现的 `__builtin_*` 都当成"隐式声明"，后来发现 `popcount`/`clz`/`ctz`/`ffs`/`parity`/`clrsb` 由 `lib/builtin.c` 以普通函数提供（见 T5.4）；真正缺的是 `bswap16/32/64`、`prefetch`、`object_size`、`assume_aligned`、`add_overflow`
 - **T5.1 `__builtin_bswap16/32/64`：完成**
   - 落点：`tcctok.h`（4 条 `DEF`）+ `tccgen.c` 的 `unary()` 里 `case TOK_builtin_bswap16/32/64`
@@ -390,9 +390,20 @@
   - 证据：15 个取值（含 `popcount(~0u)`、`clzll(1ULL)`、`ctzll(1ULL<<40)`、`ffs`、`parity`、`clrsb`）与 gcc 16.2 逐值一致，`sizeof` 为 4/4/4；用例 `181_c23_gnu_bit_builtins`
   - 唯一差异：**不折叠成常量表达式**。gcc 的 `static_assert(__builtin_popcount(0xffu)==8)` / `enum` 通过，tcc 报"不是常量"；数组维度写法两边都通过。确定性未定义情形（`ctz(0)`/`clz(0)`）两边行为不同但都属 UB，未纳入用例
   - 不做折叠的理由：C23 不要求内建折叠；要折叠就得在 `unary()` 里先判断实参是否为常量再决定走"折叠"还是"调用 libtcc1"，而单遍架构下 token 已被消费、无法回退重放
-- **T5.5 `__builtin_add_overflow` 系列：待做**（需进位/溢出标志，属后端工作，M）
+- **T5.5 `__builtin_add/sub/mul_overflow`（含 `_p`）：完成**
+  - 设计：**语义在 `libtcc1` 里，前端只做取实参与打包**。理由：精确语义要求"无限精度运算后对照目标类型范围"，加/减需要 65 位、乘需要 128 位中间量，而 tcc 没有 `__int128`。这与 tcc 既有的 `popcount/clz/ctz` 设计（同样是普通函数 + 链接期解析）一致，且零后端改动
+  - 前端（`tccgen.c`）：`ovf_type_width()` 取位宽/符号性（`_Bool` 与浮点一律报 `requires an integer type`，与 gcc 拒绝 `_Bool*` 对应）→ 两个操作数各 `gen_cast` 到 `VT_LLONG`（有符号）或 `VT_LLONG|VT_UNSIGNED`（无符号）→ `meta = sa | sb<<1 | wt<<8 | st<<15` → `vpush_helper_func` + `vrott(5)` + `gfunc_call(4)` → **必须** `vpush` + `PUT_R_RET` 才能拿到返回值（helper 调用后栈上什么都不留），最后 `gen_cast_s(VT_BOOL)` 对齐 gcc 的 `sizeof` 为 1
+  - 助手（`lib/builtin.c`）：`__tcc_{add,sub,mul}_overflow(uint64 a, uint64 b, void *res, int meta)`
+    - 加：`u = a+b; hi = (u<a) - na - nb`；减：`u = a-b; hi = nb - na - (a<b)` —— 精确值即 `u + hi*2^64`，`hi ∈ {-2..1}`，恰好 65 位
+    - 判定：`hi>0` 必溢出；`hi==0` 比较 `u <= max_T`；`hi==-1` 要求目标有符号且 `u >= 2^64-2^(w-1)`；`hi<-1` 必溢出
+    - 乘：取两操作数绝对值 → 32 位肢体算 128 位积 `(hi,lo)` → 按符号取补 → 判定 `hi==0 && lo<=max_T`（负数时上界为 `2^(w-1)`，即允许 `INT_MIN`）
+    - 存储：按 `(wt, st)` 强制转换写回 `res`（`res == NULL` 时不写，供 `_p` 用）
+  - **踩到的坑**：① `skip(',')` 自带 `next()`，再补一次 `next()` 会把下一个实参吃掉；② helper 调用后返回 void，必须自己 `vpush(&ct) + PUT_R_RET` 声明返回值（否则报 `assignment to void expression`）
+  - 证据：与 gcc 16.2 差分 **手工边界矩阵 39 行 + 随机矩阵 576 行（8×8 目标/操作数类型 × 3 组值 × add/sub/mul）逐行一致**；四后端编译通过且各自 `libtcc1.a` 含 3 个助手符号；x86_64 与 i386 freestanding（显式链 `libtcc1.a`）运行期退出码 0
+  - 已知边界：`-nostdlib` 不链 `libtcc1.a`，因此纯 freestanding 程序无法使用这些内建（与 popcount 等既有内建同一限制）；诊断文案与 gcc 不同但都会报错
+  - 用例：`182_c23_builtin_overflow`（`.expect` 由 gcc 生成）
 - 明确不做：`__builtin_shufflevector` / `__builtin_convertvector`（要求向量类型，tcc 没有）
-- 用例：`179_c23_gnu_builtins`（bswap/prefetch）、`180_c23_builtin_object_size`（object_size/assume_aligned）、`181_c23_gnu_bit_builtins`（popcount/clz/ctz/ffs/parity/clrsb），三份 `.expect` 均由 gcc 生成
+- 用例：`179_c23_gnu_builtins`（bswap/prefetch）、`180_c23_builtin_object_size`（object_size/assume_aligned）、`181_c23_gnu_bit_builtins`（popcount/clz/ctz/ffs/parity/clrsb）、`182_c23_builtin_overflow`（add/sub/mul/_p），四份 `.expect` 均由 gcc 生成
 
 
 ---
@@ -411,7 +422,7 @@
 | **P8** | T4.1–T4.3 | `_BitInt(≤64)` 在 x86_64 可用 |
 | **P9/P10** | T4.4、T4.5 | 其余后端 + ABI |
 | **P11** | T5.1、T5.2 | `bswap16/32/64` 与 gcc 逐值一致（含单次求值）、`prefetch` 返回 void；四后端交叉编译 + i386 运行期 |
-| **P12** | T5.3–T5.5 | 其余内建；`nm -u` 不再漏 `__builtin_*` |
+| **P12** | T5.3–T5.5 | 全部内建落地；`nm -u` 不再漏 `__builtin_*`（除明确不做的向量类） |
 
 ---
 
@@ -442,4 +453,6 @@ diff tcc.out gcc.out
 
 ## 6. 不做（与 `C23-SUPPORT.md` §6 一致）
 
-`constexpr` 函数（gcc 16 也不支持）、GNU 扩展长尾（`__builtin_shufflevector` 等）、C23 库设施完整实现、gcc 级 conformance 矩阵。
+`constexpr` 函数（gcc 16 也不支持）、`__builtin_shufflevector`/`__builtin_convertvector`（要求向量类型）、C23 库设施完整实现、gcc 级 conformance 矩阵。
+
+GNU 内建的有界子集已在 T5 全部落地（`bswap`/`prefetch`/`object_size`/`assume_aligned`/`add|sub|mul_overflow`），`popcount`/`clz`/`ctz` 等原本就由 `libtcc1` 提供。剩余内建长尾（如 `__builtin_apply`、`__builtin_frame_address` 的 ARM64 变体等）仍按需单独立项，不追求与 gcc 的全集对齐。

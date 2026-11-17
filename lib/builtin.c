@@ -162,3 +162,160 @@ int __builtin_parity(unsigned int x) __attribute__((alias("__tcc_builtin_parity"
 int __builtin_parityl(unsigned long x) __attribute__((alias("__tcc_builtin_parityl")));
 int __builtin_parityll(unsigned long long x) __attribute__((alias("__tcc_builtin_parityll")));
 #endif
+
+/* ---------------------------------------------- */
+/* This file also implements the __builtin_{add,sub,mul}_overflow family,
+ * which tcc's front end turns into a call here: the operation has to be
+ * carried out in infinite precision and then compared against the range of
+ * the destination type, which needs 65-bit (add/sub) and 128-bit (mul)
+ * intermediates that the compiler has no type for.
+ *
+ * The front end passes the operands as raw 64-bit patterns, sign- or
+ * zero-extended according to their own type, and packs the types into
+ * 'meta':
+ *      bit 0      a is signed
+ *      bit 1      b is signed
+ *      bits 8-14  width of the result in bits
+ *      bit 15     the result is signed
+ * The operand widths are not needed: once extended, the pattern is the
+ * exact value.  'res' is NULL for the _p forms, which only report.
+ */
+
+static int ovf_signed(int meta, int shift)
+{
+    return (meta >> shift) & 1;
+}
+
+/* largest value of an integer type of w bits */
+static unsigned long long ovf_max(unsigned long long w, int s)
+{
+    if (w == 64)
+        return s ? 0x7fffffffffffffffULL : ~0ULL;
+    return s ? ((1ULL << (w - 1)) - 1) : ((1ULL << w) - 1);
+}
+
+/* 2^64 - 2^(w-1): the smallest value that still fits a signed type when it
+   is expressed as u - 2^64 */
+static unsigned long long ovf_neg_thresh(int w)
+{
+    return ~((1ULL << (w - 1)) - 1);
+}
+
+static void ovf_store(void *res, unsigned long long u, int w, int s)
+{
+    if (!res)
+        return;
+    switch (w) {
+    case 8:  if (s) *(signed char *)res = (signed char)u;
+             else   *(unsigned char *)res = (unsigned char)u; break;
+    case 16: if (s) *(short *)res = (short)u;
+             else   *(unsigned short *)res = (unsigned short)u; break;
+    case 32: if (s) *(int *)res = (int)u;
+             else   *(unsigned int *)res = (unsigned int)u; break;
+    default: if (s) *(long long *)res = (long long)u;
+             else   *(unsigned long long *)res = (unsigned long long)u; break;
+    }
+}
+
+/* Does the exact value 'u + hi * 2^64' (hi is -2..1) fit the type w/s?
+   The low 64 bits are in u, the part above them in hi, so this is exact:
+   two operands below 2^64 need at most 65 bits for their sum. */
+static int ovf_fits(unsigned long long u, int hi, int w, int s)
+{
+    if (hi > 0)
+        return 0;                       /* >= 2^64, too large for any type */
+    if (hi < -1)
+        return 0;                       /* <= -2^64-1, too small as well */
+    if (hi == 0)
+        return u <= ovf_max(w, s);
+    /* hi == -1: the value is u - 2^64, so it is negative */
+    return s && u >= ovf_neg_thresh(w);
+}
+
+static int ovf_apply(int is_sub, unsigned long long a, unsigned long long b,
+                     void *res, int meta)
+{
+    int sa = ovf_signed(meta, 0), sb = ovf_signed(meta, 1);
+    int wt = (meta >> 8) & 0x7f, st = ovf_signed(meta, 15);
+    /* the operands arrive sign- or zero-extended, so bit 63 already holds
+       their sign whenever their type is signed */
+    int na = sa && (a >> 63) != 0;
+    int nb = sb && (b >> 63) != 0;
+    unsigned long long u;
+    int hi, fits;
+
+    if (is_sub) {
+        /* (A - B) - (na - nb)*2^64 = u - borrow*2^64 - (na - nb)*2^64 */
+        u = a - b;
+        hi = nb - na - (a < b);
+    } else {
+        /* (A + B) - (na + nb)*2^64 = u + carry*2^64 - (na + nb)*2^64 */
+        u = a + b;
+        hi = (u < a) - na - nb;
+    }
+    fits = ovf_fits(u, hi, wt, st);
+    ovf_store(res, u, wt, st);
+    return !fits;
+}
+
+/* 64x64 -> 128 bit product */
+static void ovf_mul128(unsigned long long x, unsigned long long y,
+                       unsigned long long *phi, unsigned long long *plo)
+{
+    unsigned long long x0 = x & 0xffffffffULL, x1 = x >> 32;
+    unsigned long long y0 = y & 0xffffffffULL, y1 = y >> 32;
+    unsigned long long p0 = x0 * y0;
+    unsigned long long p1 = x0 * y1;
+    unsigned long long p2 = x1 * y0;
+    unsigned long long p3 = x1 * y1;
+    unsigned long long mid = (p0 >> 32) + (p1 & 0xffffffffULL) + (p2 & 0xffffffffULL);
+
+    *plo = (p0 & 0xffffffffULL) | (mid << 32);
+    *phi = p3 + (p1 >> 32) + (p2 >> 32) + (mid >> 32);
+}
+
+static int ovf_mul(unsigned long long a, unsigned long long b,
+                   void *res, int meta)
+{
+    int sa = ovf_signed(meta, 0), sb = ovf_signed(meta, 1);
+    int wt = (meta >> 8) & 0x7f, st = ovf_signed(meta, 15);
+    int na = sa && (a >> 63) != 0;
+    int nb = sb && (b >> 63) != 0;
+    unsigned long long ma = na ? -a : a;   /* magnitudes are below 2^64 */
+    unsigned long long mb = nb ? -b : b;
+    unsigned long long hi, lo;
+    int neg, fits;
+
+    ovf_mul128(ma, mb, &hi, &lo);
+    neg = (na ^ nb) && (hi | lo) != 0;
+    if (!neg) {
+        fits = hi == 0 && lo <= ovf_max(wt, st);
+    } else {
+        /* -|p| fits a signed type when |p| <= 2^(w-1) (that is INT_MIN) */
+        fits = st && hi == 0
+               && lo <= (wt == 64 ? 0x8000000000000000ULL
+                                  : (1ULL << (wt - 1)));
+        /* store the two's complement form */
+        lo = ~lo + 1;
+    }
+    ovf_store(res, lo, wt, st);
+    return !fits;
+}
+
+int __tcc_add_overflow(unsigned long long a, unsigned long long b,
+                       void *res, int meta)
+{
+    return ovf_apply(0, a, b, res, meta);
+}
+
+int __tcc_sub_overflow(unsigned long long a, unsigned long long b,
+                       void *res, int meta)
+{
+    return ovf_apply(1, a, b, res, meta);
+}
+
+int __tcc_mul_overflow(unsigned long long a, unsigned long long b,
+                       void *res, int meta)
+{
+    return ovf_mul(a, b, res, meta);
+}
