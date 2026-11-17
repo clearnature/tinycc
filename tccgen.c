@@ -9607,6 +9607,23 @@ static int decl(int l)
                         vpop();
                         goto constexpr_done;
                     }
+                    if (constexpr_seen && (type.t & VT_BTYPE) == VT_FUNC) {
+                        constexpr_seen = 0;
+                        tcc_error("invalid type for 'constexpr'");
+                    }
+                    if (constexpr_seen && (type.t & VT_ARRAY
+                            || (type.t & VT_BTYPE) == VT_STRUCT)) {
+                        /* C23 constexpr on an aggregate: gcc makes it a
+                           read-only object that still needs an initializer,
+                           but does not treat it as a constant expression
+                           (static_assert(tab[1] == 2) and array bounds are
+                           both rejected there), so it only has to fall
+                           through to the ordinary object path with const. */
+                        constexpr_seen = 0;
+                        if (!has_init)
+                            tcc_error("'constexpr' requires an initialized"
+                                      " data declaration");
+                    }
                     if (constexpr_seen) {
                         /* C23 constexpr object: it must be initialised, and
                            its value has to be usable in constant expressions
@@ -9619,7 +9636,7 @@ static int decl(int l)
                         if (!has_init)
                             tcc_error("'constexpr' requires an initialized"
                                       " data declaration");
-                        if ((type.t & VT_ARRAY) || (type.t & VT_BTYPE) == VT_FUNC)
+                        if (type.t & VT_ARRAY)
                             tcc_error("invalid type for 'constexpr'");
                         next();
                         cv = expr_const();
