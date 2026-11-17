@@ -104,7 +104,8 @@ endif
 # set __STDC_VERSION__.  See C23-TASKS.md T0.1/T0.2.
 154_c23_std_invalid.test : FLAGS += -std=bogus
 158_std_c23_version.test : FLAGS += -std=c23
-159_c23_auto_rejected.test : FLAGS += -std=c23
+159_c23_auto.test : FLAGS += -std=c23
+171_c23_auto_errors.test : FLAGS += -std=c23
 165_c23_spellings.test : FLAGS += -std=c23
 166_c23_thread_local.test : FLAGS += -std=c23
 166_c23_thread_local.test : NORUN = true # -run has no TLS support

@@ -219,10 +219,15 @@
 
 ### T3.1 `auto` 类型推导
 
-- 落点：`tccgen.c` 声明解析（需局部倒序：先解析初始化器求类型，再分配对象）
-- gcc 参照：`c/c-parser.cc:820`、`:3836`
-- 验收：整型/浮点/指针/结构体/数组边界；`auto` 与旧式存储类用法不冲突；`sizeof` 与 gcc 一致
-- 风险：tcc 单遍无 AST，这是语法糖之外**第一个结构性改动**，必须小步提交（先支持标量初始化器）
+- 状态：**完成**（函数内单声明符；文件作用域按 C23 拒绝，见下）
+- 落点：`tccgen.c` 的 `parse_btype()`（`auto_decl` 标志 + 占位类型）、`decl()` 的 `auto_decl` 分支
+- 做法（**单遍求值 + 回填**，不用两遍 token 重放）：`expr_eq()` 求一次初值 → 取 `vtop->type` 作声明类型（去 `VT_QUAL`、数组退化为指针）→ `gen_assign_cast()` 让值真的成为该类型 → `decl_initializer_alloc(..., has_init=0, ...)` 只分配符号 → `vset(&sym->type, sym->r|VT_LVAL, sym->c)` 压地址 → `vswap(); vstore(); vpop();`
+- **`vstore()` 的语义坑**：它只在末尾 `vtop--` 弹掉地址、**把存进去的值留在栈上**当表达式结果。少一次 `vpop()` 就会报 `internal compiler error: vstack leak (1)`。VLA 尺寸那段（先 `vset` 地址、`vswap`、`vstore`）是同一惯例
+- 为什么不用"存 token 再重放两遍"：那条路实测会让编译器挂死（见 `reference/tcc-token-stream-save-replay.md`）
+- 验收（已实测，与 gcc 逐项一致）：`auto i = 1`（int，sizeof 4）、`auto d = 1.5`（double，sizeof 8）、`auto p = &n`（int*，改 `*p` 生效）、`auto s = "hi"`（char*，输出 `hi`）、`auto s2 = s1`（结构体拷贝，字段正确）→ 综合输出 `1 1.5 7 hi 4 5 4 8` 与 gcc 相同
+- 错误路径：无初始化器、多声明符、`auto *p` 一律报错；多声明符文案与 gcc 一致（`'auto' may only be used with a single declarator`）
+- **有意分歧**：文件作用域 `auto g = 1;` tcc 报错（C23 6.7.1 禁止），而 gcc 接受并当作普通全局（`nm` 显示 `D g`，int 4 字节）。选择"明确报错"而不是半实现全局初始化
+- 用例：`159_c23_auto`（正向，`.expect` 由 gcc 生成）、`171_c23_auto_errors`（负向，手写）；原 `159_c23_auto_rejected` 已按计划正向化
 
 ### T3.2 `constexpr` 对象
 

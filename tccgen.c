@@ -144,6 +144,9 @@ static int parse_btype(CType *type, AttributeDef *ad, int ignore_label);
 /* set by parse_btype() when a C23 'constexpr' specifier was seen, consumed
    by decl() right after the declarator is known */
 static int constexpr_seen;
+/* set by parse_btype() when C23 'auto' was used as a type specifier;
+   decl() then infers the type from the initializer */
+static int auto_decl;
 /* [[nodiscard]] support without touching vtop->sym: block() marks that the
    value of the statement expression will be discarded, the call generation
    notes a nodiscard callee whose result is the whole statement, and the
@@ -5115,8 +5118,14 @@ static int parse_btype(CType *type, AttributeDef *ad, int ignore_label)
         type_found = 1;
     }
 the_end:
-    if (auto_seen && !typespec_found && tcc_state->std >= TCC_STD_C23)
-        tcc_error("type inference for 'auto' is not supported");
+    if (auto_seen && !typespec_found && tcc_state->std >= TCC_STD_C23) {
+        /* C23 'auto' takes its type from the initializer.  Report a type as
+           found so decl() follows the normal declaration path, and let it
+           replace this placeholder once the initializer is read. */
+        auto_decl = 1;
+        type_found = 1;
+        t = VT_INT;
+    }
     if (tcc_state->char_is_unsigned) {
         if ((t & (VT_DEFSIGN|VT_BTYPE)) == VT_BYTE)
             t |= VT_UNSIGNED;
@@ -9200,6 +9209,53 @@ static int decl(int l)
                     if (tok == '=')
                         has_init = 1;
 
+                    if (auto_decl) {
+                        /* C23 auto.  The initializer is evaluated once: its
+                           value stays on the stack and its type becomes the
+                           declared type, then the object is allocated and the
+                           value stored into it.  */
+                        CType atype;
+                        Sym *asym;
+                        int ar;
+                        auto_decl = 0;
+                        if (l == VT_CONST)
+                            tcc_error("file-scope declaration of '%s'"
+                                      " specifies 'auto'",
+                                      get_tok_str(v & ~SYM_FIELD, NULL));
+                        if (!has_init)
+                            tcc_error("'auto' requires an initializer");
+                        if (!v || ((type.t & VT_BTYPE) == VT_PTR)
+                            || (type.t & VT_ARRAY) || type.ref)
+                            tcc_error("'auto' requires a plain identifier"
+                                      " declarator");
+                        next(); /* '=' */
+                        expr_eq();
+                        /* lvalue conversion: drop qualifiers and arrays */
+                        atype = vtop->type;
+                        atype.t &= ~VT_QUAL;
+                        if (atype.t & VT_ARRAY) {
+                            /* an array initializer decays to a pointer; retype
+                               the value first so the cast below is a no-op
+                               instead of an array-to-pointer assignment */
+                            mk_pointer(&atype);
+                            vtop->type = atype;
+                        }
+                        gen_assign_cast(&atype);
+                        if (tok == ',')
+                            tcc_error("'auto' may only be used with a single"
+                                      " declarator");
+                        ar = VT_LOCAL;
+                        if (!(atype.t & VT_ARRAY))
+                            ar |= VT_LVAL;
+                        decl_initializer_alloc(&atype, &ad, ar, 0, v, l);
+                        asym = sym_find(v);
+                        vset(&asym->type, asym->r | VT_LVAL, asym->c);
+                        vtop->sym = asym;
+                        vswap();
+                        vstore(); /* leaves the stored value on the stack */
+                        vpop();
+                        goto constexpr_done;
+                    }
                     if (constexpr_seen) {
                         /* C23 constexpr object: it must be initialised, and
                            its value has to be usable in constant expressions
