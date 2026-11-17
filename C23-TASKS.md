@@ -363,8 +363,8 @@
 
 ### T5.1–T5.5 GNU 内建有界子集
 
-- 状态：**T5.1–T5.3 完成**（2026-11-17）；T5.4、T5.5 待做
-- 范围来源：`C23-SUPPORT.md` §6.1 的实测（15 个常见 `__builtin_*` 里 tcc 只有 6 个是真内建，其余 9 个是隐式声明 → 链接期 `unresolved reference`）
+- 状态：**T5.1–T5.3 完成、T5.4 实测已由 `lib/builtin.c` 覆盖**（2026-11-17）；仅 T5.5 待做
+- 范围来源：`C23-SUPPORT.md` §6.1 的实测。最初把 `nm -u` 里出现的 `__builtin_*` 都当成"隐式声明"，后来发现 `popcount`/`clz`/`ctz`/`ffs`/`parity`/`clrsb` 由 `lib/builtin.c` 以普通函数提供（见 T5.4）；真正缺的是 `bswap16/32/64`、`prefetch`、`object_size`、`assume_aligned`、`add_overflow`
 - **T5.1 `__builtin_bswap16/32/64`：完成**
   - 落点：`tcctok.h`（4 条 `DEF`）+ `tccgen.c` 的 `unary()` 里 `case TOK_builtin_bswap16/32/64`
   - 实现：纯前端，零后端改动 —— `parse_builtin_params(0,"e")` 取值 → `gen_cast` 到 `unsigned short/int/long long` 容器 → `gv_dup()` 复制 `size-1` 份 → 逐字节 `& mask` + 移位 + `|` → 末尾 `gen_cast` 回窄类型（保证 `sizeof` 与 gcc 一致）
@@ -385,10 +385,14 @@
   - `assume_aligned`：返回指针本身并转成 `void *`（`sizeof` 与 gcc 一致为 8）；对齐与可选偏移实参照常求值后丢弃；0/1 个实参报 `too few arguments`
   - 证据：与 gcc 差分（`sizeof`、四档数组、全局数组、指针形参、不求值、返回同一指针、三实参形式）逐行一致；四后端交叉编译 0 个未定义 `__builtin_*`；x86_64 与 i386 freestanding 运行期退出码 0
   - **与 gcc 的差异（双向）**：① gcc 能做真正的对象大小分析，tcc 对非"整数组"形状一律保守；② 反方向上 tcc 更宽松 —— gcc 认为 `__builtin_object_size` 不是 ICE，`static_assert`/`enum` 里用会报 `expression in static assertion is not constant`，tcc 接受（数组维度两边都接受）
-- **T5.4 `__builtin_popcount/clz/ctz`：待做**（前端"移位+掩码"或查表即可）
+- **T5.4 `__builtin_popcount/clz/ctz`：不需要改动（本来就可用）**
+  - 实测才发现：`lib/builtin.c` 已经用普通函数实现了 `popcount`/`clz`/`ctz`/`ffs`/`parity`/`clrsb` 的 `int`/`long`/`long long` 三个宽度（查表 + SWAR），链接期从 `libtcc1.a` 解析。之前判"隐式声明"的误读来自 `nm -u x.o` —— 普通函数在 `.o` 里本来就是未定义的
+  - 证据：15 个取值（含 `popcount(~0u)`、`clzll(1ULL)`、`ctzll(1ULL<<40)`、`ffs`、`parity`、`clrsb`）与 gcc 16.2 逐值一致，`sizeof` 为 4/4/4；用例 `181_c23_gnu_bit_builtins`
+  - 唯一差异：**不折叠成常量表达式**。gcc 的 `static_assert(__builtin_popcount(0xffu)==8)` / `enum` 通过，tcc 报"不是常量"；数组维度写法两边都通过。确定性未定义情形（`ctz(0)`/`clz(0)`）两边行为不同但都属 UB，未纳入用例
+  - 不做折叠的理由：C23 不要求内建折叠；要折叠就得在 `unary()` 里先判断实参是否为常量再决定走"折叠"还是"调用 libtcc1"，而单遍架构下 token 已被消费、无法回退重放
 - **T5.5 `__builtin_add_overflow` 系列：待做**（需进位/溢出标志，属后端工作，M）
 - 明确不做：`__builtin_shufflevector` / `__builtin_convertvector`（要求向量类型，tcc 没有）
-- 用例：`179_c23_gnu_builtins`（bswap/prefetch）、`180_c23_builtin_object_size`（object_size/assume_aligned），两份 `.expect` 均由 gcc 生成
+- 用例：`179_c23_gnu_builtins`（bswap/prefetch）、`180_c23_builtin_object_size`（object_size/assume_aligned）、`181_c23_gnu_bit_builtins`（popcount/clz/ctz/ffs/parity/clrsb），三份 `.expect` 均由 gcc 生成
 
 
 ---
