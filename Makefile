@@ -238,8 +238,12 @@ LIBTCC_OBJ = $(patsubst %.c,$(X)%.o,$(LIBTCC_SRC))
 LIBTCC_INC = $(filter %.h %-gen.c %-link.c,$($T_FILES))
 TCC_FILES = $(X)tcc.o $(LIBTCC_OBJ)
 $(X)tccpp.o : $(TCCDEFS_H)
-$(X)libtcc.o : $(LIBTCC_INC) DEFINES += -DONE_SOURCE=0
-$(CROSS_TARGET)-tcc.o : $(LIBTCC_INC) DEFINES += -DONE_SOURCE=0
+# 坑实录：依赖与目标特定变量同行，macOS make 把 DEFINES 解析成前置条件
+# （No rule to make target 'DEFINES'）——必须分行
+$(X)libtcc.o : $(LIBTCC_INC)
+$(X)libtcc.o : DEFINES += -DONE_SOURCE=0
+$(CROSS_TARGET)-tcc.o : $(LIBTCC_INC)
+$(CROSS_TARGET)-tcc.o : DEFINES += -DONE_SOURCE=0
 endif
 # native tcc always made from tcc.o and libtcc.[so|a]
 tcc.o : DEFINES += -DONE_SOURCE=0
