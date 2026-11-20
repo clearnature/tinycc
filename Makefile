@@ -230,14 +230,16 @@ ifeq ($(ONE_SOURCE),yes)
 LIBTCC_OBJ = $(X)libtcc.o
 LIBTCC_INC = $($T_FILES)
 TCC_FILES = $(X)tcc.o
-$(X)tcc.o $(X)libtcc.o : $(TCCDEFS_H)
+# 依赖补全：ONE_SOURCE 下 gen/link 文件被 tcc.c->libtcc.c 链式 include，
+# 缺依赖会让 tri-gen/tri-link 改动不触发重编（T-0 实录）
+$(X)tcc.o $(X)libtcc.o : $(TCCDEFS_H) $(LIBTCC_INC)
 else
 LIBTCC_OBJ = $(patsubst %.c,$(X)%.o,$(LIBTCC_SRC))
 LIBTCC_INC = $(filter %.h %-gen.c %-link.c,$($T_FILES))
 TCC_FILES = $(X)tcc.o $(LIBTCC_OBJ)
 $(X)tccpp.o : $(TCCDEFS_H)
-$(X)libtcc.o : DEFINES += -DONE_SOURCE=0
-$(CROSS_TARGET)-tcc.o : DEFINES += -DONE_SOURCE=0
+$(X)libtcc.o : $(LIBTCC_INC) DEFINES += -DONE_SOURCE=0
+$(CROSS_TARGET)-tcc.o : $(LIBTCC_INC) DEFINES += -DONE_SOURCE=0
 endif
 # native tcc always made from tcc.o and libtcc.[so|a]
 tcc.o : DEFINES += -DONE_SOURCE=0
