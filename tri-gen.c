@@ -114,12 +114,10 @@ static void TRI_JALR(unsigned rd, unsigned rs1)
 }
 /* 布尔取反（唯一正确方式；XORI 1 是逐 trit mod-3 加，禁用） */
 static void TRI_SEQZ_NOT(unsigned rd) { o(TRI_ENC_I(TRI_OP_OPIMM, 1, rd, 5, rd)); } /* SLTIU rd,rd,1 */
-static void TRI_SNEZ(unsigned rd)     { o(TRI_ENC_R(TRI_OP_OP, 0, 0, rd, 4, rd)); } /* SLTU rd,zero,rd */
+static void TRI_SNEZ(unsigned rd)     { o(TRI_ENC_R(TRI_SLTU_OP, TRI_SLTU_FUNCT2, 0, rd, TRI_SLTU_FUNCT, rd)); } /* SLTU rd,zero,rd */
 
-/* ---- 符号地址补丁表（LUI 绝对 13-trit / JAL 槽偏移） ---- */
-enum { TRI_R_LUI_ABS = 1, TRI_R_JAL_SLOT = 2 };
-struct tri_patch { int text_off; int kind; Sym *sym; int addend; unsigned rd; };
-ST_DATA struct tri_patch *TRI_PATCHES; ST_DATA int NTP, CAPTP;
+/* ---- 符号地址补丁表（类型在 tri-isa.h；LUI 绝对/ JAL 槽偏移） ---- */
+/* 定义（tentative）：见 tri-isa.h 声明 */
 
 ST_FUNC void tri_add_patch(int kind, int text_off, Sym *sym, int addend, unsigned rd)
 {
@@ -222,7 +220,7 @@ ST_FUNC void gen_fill_nops(int bytes)
 static int tri_addr_base(SValue *sv, int forstore, int *fc)
 {
     int v = sv->r & VT_VALMASK;
-    *fc = sv->c.i;
+    *fc = (int)(int64_t)sv->c.i;
     if (sv->r & VT_SYM) {
         /* 全局/静态：LUI 占位 + 补丁；偏移并入 addend */
         tri_lui_load(TRI_T0, sv->sym, *fc);
@@ -249,6 +247,20 @@ static void tri_check_off(int fc)
 }
 
 static int tri_const_fits(int64_t v) { return v >= -TRI_IMM7_MAX && v <= TRI_IMM7_MAX; }
+
+/* 正数段装载：LUI(hi13) [+ ADDI(lo7)]；对齐 trirv_cc load_seg（非负路径） */
+static void tri_load_seg_abs(unsigned rr, long long n)
+{
+    long long h = n / 2187, lo = n % 2187;
+    const long long HALF7 = 1093;
+    if (lo > HALF7) { lo -= 2187; h += 1; }
+    if (h == 0) {
+        if (lo) TRI_ADDI(rr, 0, (int)lo); else TRI_NOP();
+    } else {
+        o(TRI_ENC_U(TRI_OP_LUI, (unsigned)h, rr));
+        if (lo) TRI_ADDI(rr, rr, (int)lo);
+    }
+}
 
 /* 大小 -> mem funct（TriRV: 1/2/9 tryte；LBU/LHU funct3/4 零扩展，LB/LH 0/1 符号） */
 static int tri_mem_funct(int size, int *ok)
@@ -290,21 +302,60 @@ ST_FUNC void load(int r, SValue *sv)
     }
     if (v == VT_CONST) {
         if (fr & VT_SYM) {
-            tri_lui_load(rr, sv->sym, (int)sv->c.i);
+            tri_lui_load(rr, sv->sym, (int)(int64_t)sv->c.i);
             return;
         }
-        if (tri_const_fits(sv->c.i)) {
-            TRI_ADDI(rr, 0, (int)sv->c.i);
-        } else if (sv->c.i >= -(int64_t)2147483647 && sv->c.i <= (int64_t)2147483647) {
-            /* LUI hi13 + ADDI lo7（3 补码借位，对齐 trirv_cc load_imm 口径） */
-            int64_t lo = sv->c.i % 2187, hi;
+        if (tri_const_fits((int64_t)sv->c.i)) {
+            TRI_ADDI(rr, 0, (int)(int64_t)sv->c.i);
+        } else if ((int64_t)sv->c.i >= -(int64_t)2147483647 && (int64_t)sv->c.i <= (int64_t)2147483647) {
+            /* LUI hi13 + ADDI lo7 两槽路径（i32 窗口内）。
+               坑实录：CValue.i 是 uint64_t（tcc.h CValue 联合），裸写
+               `sv->c.i >= -(int64_t)2147483647` 触发 usual arithmetic
+               conversions——负常量转巨大无符号数，条件恒 FALSE，12345
+               误入错误分支。比较必须显式 (int64_t) 转换（本次审计修复）。 */
+            int64_t lo = (int64_t)sv->c.i % 2187, hi;
             if (lo > TRI_IMM7_MAX) lo -= 2187;
-            hi = (sv->c.i - lo) / 2187;
-            assert(hi >= -TRI_IMM13_MAX && hi <= TRI_IMM13_MAX);
-            o(TRI_ENC_U(TRI_OP_LUI, (unsigned)(hi % 1594323 + 1594323) % 1594323u, rr));
+            hi = ((int64_t)sv->c.i - lo) / 2187;
+            if (hi < -TRI_IMM13_MAX || hi > TRI_IMM13_MAX)
+              tcc_error("TriRV spike: constant %lld beyond LUI window", (long long)sv->c.i);
+            o(TRI_ENC_U(TRI_OP_LUI, (unsigned)((hi % 1594323) + 1594323) % 1594323u, rr));
             TRI_ADDI(rr, rr, (int)lo);
         } else {
-            tcc_error("TriRV spike: constant %lld out of i32 window", (long long)sv->c.i);
+            /* 3×20-trit 平衡分段（对齐 trirv_cc load_imm128 口径）：
+               v = s0 + s1·3^20 + s2·3^20²，每段经 load_seg = LUI(hi13)+ADDI(lo7)。
+               段间借位用 m++ 传播（trirv_cc 同款）。 */
+            long long segs[8];
+            int ns = 0;
+            int64_t m = (int64_t)sv->c.i;
+            while (m) {
+                int64_t seg = m % 3486784401LL;
+                m /= 3486784401LL;
+                if (seg > 1743392200LL) { seg -= 3486784401LL; m += 1; }
+                segs[ns++] = seg;
+            }
+            if (ns == 0) { TRI_NOP(); }
+            else {
+                int si;
+                /* 高段：load_seg（LUI hi13 + ADDI lo7，负段用 SUB zero,reg 取负） */
+                long long n = segs[ns - 1];
+                if (n < 0) {
+                    tri_load_seg_abs(rr, -n);
+                    o(TRI_ENC_R(TRI_SUB_OP, TRI_SUB_FUNCT2, rr, 0, TRI_SUB_FUNCT, rr)); /* SUB rr,zero,rr */
+                } else {
+                    tri_load_seg_abs(rr, n);
+                }
+                for (si = ns - 2; si >= 0; si--) {
+                    o(TRI_ENC_I(TRI_OP_OPIMM, 20, rr, 4 /* SLLI funct=4 */, rr)); /* SLLI rr,rr,20 */
+                    n = segs[si];
+                    if (n < 0) {
+                        tri_load_seg_abs(5 /* t0 */, -n);
+                        o(TRI_ENC_R(TRI_SUB_OP, TRI_SUB_FUNCT2, 5, 0, TRI_SUB_FUNCT, 5));
+                    } else {
+                        tri_load_seg_abs(5, n);
+                    }
+                    o(TRI_ENC_R(TRI_ADD_OP, TRI_ADD_FUNCT2, 5, rr, TRI_ADD_FUNCT, rr)); /* ADD rr,rr,t0 */
+                }
+            }
         }
         return;
     }
@@ -332,7 +383,7 @@ ST_FUNC void load(int r, SValue *sv)
         case TOK_GE:  swap = 1, notafter = 1; goto do_slt;
         case TOK_LE:  swap = 1, notafter = 0; goto do_slt;
         do_slt:
-            o(TRI_ENC_R(TRI_OP_OP, 0, swap ? a : b, swap ? b : a, 3, rr)); /* SLT */
+            o(TRI_ENC_R(TRI_SLT_OP, TRI_SLT_FUNCT2, swap ? a : b, swap ? b : a, TRI_SLT_FUNCT, rr)); /* SLT */
             if (notafter) TRI_SEQZ_NOT(rr);
             break;
         case TOK_ULT: swap = 0, notafter = 0; goto do_sltu;
@@ -340,7 +391,7 @@ ST_FUNC void load(int r, SValue *sv)
         case TOK_UGE: swap = 1, notafter = 1; goto do_sltu;
         case TOK_ULE: swap = 1, notafter = 0; goto do_sltu;
         do_sltu:
-            o(TRI_ENC_R(TRI_OP_OP, 0, swap ? a : b, swap ? b : a, 4, rr)); /* SLTU */
+            o(TRI_ENC_R(TRI_SLTU_OP, TRI_SLTU_FUNCT2, swap ? a : b, swap ? b : a, TRI_SLTU_FUNCT, rr)); /* SLTU */
             if (notafter) TRI_SEQZ_NOT(rr);
             break;
         case TOK_NE:
@@ -474,7 +525,7 @@ static void gcall_or_jmp(int docall)
     if ((vtop->r & (VT_VALMASK | VT_LVAL)) == VT_CONST &&
         (vtop->r & VT_SYM)) {
         o(TRI_ENC_U(TRI_OP_JAL, 0, tr));
-        tri_add_patch(TRI_R_JAL_SLOT, ind - 4, vtop->sym, (int)vtop->c.i, tr);
+        tri_add_patch(TRI_R_JAL_SLOT, ind - 4, vtop->sym, (int)(int64_t)vtop->c.i, tr);
     } else if (vtop->r < VT_CONST) {
         TRI_JALR(tr, ireg(vtop->r));
     } else {
@@ -512,7 +563,7 @@ static void gen_opil(int op)
 {
     int a, b, d;
     if ((vtop->r & (VT_VALMASK | VT_LVAL | VT_SYM)) == VT_CONST) {
-        int fc = vtop->c.i;
+        int fc = (int)(int64_t)vtop->c.i;
         if (tri_const_fits(fc)) {
             int fuse = 0, im = fc;
             switch (op) {
@@ -544,6 +595,32 @@ static void gen_opil(int op)
             }
         }
     }
+    /* C 移位 = 二进制移位：<<= ×2^k，>>= ÷2^k（TriRV SLL/SRL/SRA 是三进制
+       ×3^k——直译是语义错误，t 左移/算术右移 用例暴露）。const 移位量走
+       MUL/DIVU/DIV by 2^k 常量（方案 A 口径；DIV 向零截断，负数非精确除
+       与 gcc floor 的差异记档）；变量移位量 spike 报错。 */
+    if ((op == TOK_SHL || op == TOK_SHR || op == TOK_SAR)
+        && (vtop[0].r & (VT_VALMASK | VT_LVAL | VT_SYM)) == VT_CONST
+        && (int64_t)vtop[0].c.i >= 0 && (int64_t)vtop[0].c.i <= 45) {
+        long long shift = (int64_t)vtop[0].c.i;
+        long long mul2 = 1LL << shift;           /* ≤ 2^45，int64 内 */
+        vtop[0].c.i = (uint64_t)(1LL << (int64_t)vtop[0].c.i);  /* 栈顶常量 k → 2^k（MUL/DIV 常量） */
+        gv2(RC_INT, RC_INT);                     /* 双操作数物化（标准路径，无泄漏） */
+        a = ireg(vtop[-1].r);
+        b = ireg(vtop[0].r);
+        vtop -= 2;
+        d = get_reg(RC_INT);
+        vtop++;
+        vtop[0].r = d;
+        d = ireg(d);
+        if (op == TOK_SHL)
+          o(TRI_ENC_R(TRI_MUL_OP, TRI_MUL_FUNCT2, b, a, TRI_MUL_FUNCT, d));    /* MUL d,a,2^k */
+        else if (op == TOK_SHR)
+          o(TRI_ENC_R(TRI_DIVU_OP, TRI_DIVU_FUNCT2, b, a, TRI_DIVU_FUNCT, d)); /* DIVU d,a,2^k */
+        else
+          o(TRI_ENC_R(TRI_DIV_OP, TRI_DIV_FUNCT2, b, a, TRI_DIV_FUNCT, d));   /* DIV d,a,2^k（向零截断） */
+        return;
+    }
     gv2(RC_INT, RC_INT);
     a = ireg(vtop[-1].r);
     b = ireg(vtop[0].r);
@@ -561,19 +638,22 @@ static void gen_opil(int op)
         }
         tcc_error("TriRV spike: implement me %s", get_tok_str(op, NULL));
         break;
-    case '+': o(TRI_ENC_R(TRI_OP_OP, 0, b, a, 0, d)); break;
-    case '-': o(TRI_ENC_R(TRI_OP_OP, 0, b, a, 1, d)); break;
-    case '*': o(TRI_ENC_R(13 /* M-EXT */, 0, b, a, 0, d)); break;  /* MUL */
-    case '/': case TOK_PDIV: o(TRI_ENC_R(14, 0, b, a, 0, d)); break; /* DIV */
-    case TOK_UDIV: o(TRI_ENC_R(14, 0, b, a, 1, d)); break;           /* DIVU */
-    case '%': o(TRI_ENC_R(15, 0, b, a, 0, d)); break;                /* REM */
-    case TOK_UMOD: o(TRI_ENC_R(15, 0, b, a, 1, d)); break;           /* REMU */
-    case TOK_SHL: o(TRI_ENC_R(TRI_OP_OP, 0, b, a, 2, d)); break;     /* SLL */
-    case TOK_SHR: o(TRI_ENC_R(TRI_OP_OP, 0, b, a, 6, d)); break;     /* SRL */
-    case TOK_SAR: o(TRI_ENC_R(TRI_OP_OP, 0, b, a, 7, d)); break;     /* SRA */
-    case '&': o(TRI_ENC_R(TRI_OP_OP, 0, b, a, 9, d)); break;         /* AND（逐 trit min） */
-    case '|': o(TRI_ENC_R(TRI_OP_OP, 0, b, a, 8, d)); break;         /* OR（逐 trit max） */
-    case '^': o(TRI_ENC_R(TRI_OP_OP, 0, b, a, 5, d)); break;         /* XOR（逐 trit mod3） */
+    /* R 型编码一律走 tri-isa.h 生成宏（op/funct/funct2 与 isa.encode 96/96 对齐）。
+       坑实录：此处曾误用 RISC-V funct3 语义直填 funct——SUB 发成 SLL、
+       比较物化发成 OR 等 6 类错码（t4/t 减 暴露）。 */
+    case '+': o(TRI_ENC_R(TRI_ADD_OP, TRI_ADD_FUNCT2, b, a, TRI_ADD_FUNCT, d)); break;
+    case '-': o(TRI_ENC_R(TRI_SUB_OP, TRI_SUB_FUNCT2, b, a, TRI_SUB_FUNCT, d)); break;
+    case '*': o(TRI_ENC_R(TRI_MUL_OP, TRI_MUL_FUNCT2, b, a, TRI_MUL_FUNCT, d)); break;
+    case '/': case TOK_PDIV: o(TRI_ENC_R(TRI_DIV_OP, TRI_DIV_FUNCT2, b, a, TRI_DIV_FUNCT, d)); break;
+    case TOK_UDIV: o(TRI_ENC_R(TRI_DIVU_OP, TRI_DIVU_FUNCT2, b, a, TRI_DIVU_FUNCT, d)); break;
+    case '%': o(TRI_ENC_R(TRI_REM_OP, TRI_REM_FUNCT2, b, a, TRI_REM_FUNCT, d)); break;
+    case TOK_UMOD: o(TRI_ENC_R(TRI_REMU_OP, TRI_REMU_FUNCT2, b, a, TRI_REMU_FUNCT, d)); break;
+    case TOK_SHL: o(TRI_ENC_R(TRI_SLL_OP, TRI_SLL_FUNCT2, b, a, TRI_SLL_FUNCT, d)); break;
+    case TOK_SHR: o(TRI_ENC_R(TRI_SRL_OP, TRI_SRL_FUNCT2, b, a, TRI_SRL_FUNCT, d)); break;
+    case TOK_SAR: o(TRI_ENC_R(TRI_SRA_OP, TRI_SRA_FUNCT2, b, a, TRI_SRA_FUNCT, d)); break;
+    case '&': o(TRI_ENC_R(TRI_AND_OP, TRI_AND_FUNCT2, b, a, TRI_AND_FUNCT, d)); break;
+    case '|': o(TRI_ENC_R(TRI_OR_OP, TRI_OR_FUNCT2, b, a, TRI_OR_FUNCT, d)); break;
+    case '^': o(TRI_ENC_R(TRI_XOR_OP, TRI_XOR_FUNCT2, b, a, TRI_XOR_FUNCT, d)); break;
     }
 }
 

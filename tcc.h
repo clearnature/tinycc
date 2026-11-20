@@ -401,7 +401,10 @@ extern long double strtold (const char *__nptr, char **__endptr);
 
 /* -------------------------------------------- */
 
-#if PTR_SIZE == 8
+#if PTR_SIZE == 8 || defined TCC_TARGET_TRIRV
+/* TriRV：内部符号表/重定位一律 64-bit ELF 结构（ELF 输出已被 TRV1 writer
+   绕过，类宽只是内部记账口径；PTR_SIZE=9 落进 32-bit 类会让 greloca 的
+   addend 丢失——Elf32_Rel 无 addend 字段，char* 字符串踩坑实录） */
 # define ELFCLASSW ELFCLASS64
 # define ElfW(type) Elf##64##_##type
 # define ELFW(type) ELF##64##_##type

@@ -442,4 +442,12 @@ enum { TRI_FMT_R=0, TRI_FMT_I, TRI_FMT_S, TRI_FMT_B, TRI_FMT_U, TRI_FMT_J };
 #define TRI_IMM7_MAX 1093       /* (3^7-1)/2 */
 #define TRI_IMM13_MAX 797161    /* (3^13-1)/2 */
 
+/* ---- 符号地址补丁表（tri-gen 定义 / tri-link 消费） ---- */
+enum { TRI_R_LUI_ABS = 1, TRI_R_JAL_SLOT = 2 };
+struct tri_patch { int text_off; int kind; Sym *sym; int addend; unsigned rd; };
+/* 声明：ST_DATA 宏按 ONE_SOURCE 自动切 static/extern；定义在 tri-gen.c
+   （C tentative definition 规则下 `ST_DATA int NTP;` 即定义） */
+ST_DATA struct tri_patch *TRI_PATCHES;
+ST_DATA int NTP;
+
 #endif /* TRI_ISA_H */

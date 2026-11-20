@@ -8873,7 +8873,7 @@ static void init_putv(init_params *p, CType *type, unsigned long c)
                 write_ldouble(ptr, &vtop->c.ld);
 		break;
 
-#if PTR_SIZE == 8
+#if PTR_SIZE == 8 || defined TCC_TARGET_TRIRV
             /* intptr_t may need a reloc too, see tcctest.c:relocation_test() */
 	    case VT_LLONG:
 	    case VT_PTR:

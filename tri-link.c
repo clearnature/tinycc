@@ -34,10 +34,7 @@
 #include "tcc.h"
 #include "tri-isa.h"
 
-/* 来自 tri-gen.c 的补丁表（ST_DATA 跨文件共享） */
-struct tri_patch { int text_off; int kind; Sym *sym; int addend; unsigned rd; };
-extern struct tri_patch *TRI_PATCHES; extern int NTP;
-enum { TRI_R_LUI_ABS = 1, TRI_R_JAL_SLOT = 2 };
+/* 补丁表类型在 tri-isa.h；表本体由 tri-gen.c 定义（ONE_SOURCE 下单 TU） */
 ST_FUNC int tri_output_file(TCCState *s1, const char *filename);
 
 static Section *TRI_SEC_DATA, *TRI_SEC_RODATA, *TRI_SEC_BSS, *TRI_SEC_COMMON;
@@ -80,6 +77,53 @@ static addr_t tri_sym_addr(TCCState *s1, Sym *sym)
     }
     sec = s1->sections[es->st_shndx];
     return tri_get_section_base(s1, sec) + es->st_value;
+}
+
+/* 数据段重定位回填：R_DATA_PTR → 目标地址（45-trit 字，9 tryte LE）
+ * 写入段数据 r_offset 处。文本符号（函数指针）+20B 前移。 */
+static Section *tri_find_section(TCCState *s1, const char *name)
+{
+    int i;
+    for (i = 0; i < s1->nb_sections; i++)
+      if (s1->sections[i] && !strcmp(s1->sections[i]->name, name))
+        return s1->sections[i];
+    return NULL;
+}
+
+static void tri_apply_data_relocs(TCCState *s1, Section *sec)
+{
+    char relname[64];
+    Section *rel;
+    int i, n;
+    snprintf(relname, sizeof relname, ".rela%s", sec->name);
+    rel = tri_find_section(s1, relname);
+    if (!rel || rel->data_offset == 0)
+      return;
+    n = rel->data_offset / (int)sizeof(ElfW_Rel);
+    for (i = 0; i < n; i++) {
+        ElfW_Rel *relp = (ElfW_Rel *)rel->data + i;
+        int symidx = ELFW(R_SYM)(relp->r_info);
+        int type = ELFW(R_TYPE)(relp->r_info);
+        ElfW(Sym) *es = (ElfW(Sym) *)s1->symtab->data + symidx;
+        Section *tsec = s1->sections[es->st_shndx];
+        addr_t base = tri_get_section_base(s1, tsec);
+        addr_t val;
+        int k;
+        uint64_t v;
+        if (tsec == text_section)
+          base += 20;                        /* 文本符号随 _start 前移 */
+        if (type != R_DATA_PTR && type != R_DATA_32)
+          continue;
+        val = base + es->st_value + (addr_t)relp->r_addend;
+        /* 45-trit 值按 base-243 小端写 9 tryte */
+        v = (uint64_t)val;
+        for (k = 0; k < 9; k++) {
+            unsigned t = (unsigned)(v % 243);
+            v /= 243;
+            if (relp->r_offset + k < sec->data_offset)
+              sec->data[relp->r_offset + k] = (unsigned char)t;
+        }
+    }
 }
 
 static void tri_write_le32(FILE *f, uint32_t v)
@@ -176,6 +220,7 @@ ST_FUNC int tri_output_file(TCCState *s1, const char *filename)
     for (i = 0; i < n_inst; i++) tri_write_le32(f, out[i]);
     for (i = 0; i < nsegc; i++) {
         Section *sec = segs[i];
+        tri_apply_data_relocs(s1, sec);
         tri_write_le32(f, (uint32_t)sec->sh_addr);
         tri_write_le32(f, (uint32_t)sec->data_offset);
         fwrite(sec->data, 1, sec->data_offset, f);
