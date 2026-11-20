@@ -53,6 +53,9 @@
 #include "riscv64-gen.c"
 #include "riscv64-link.c"
 #include "riscv64-asm.c"
+#elif defined(TCC_TARGET_TRIRV)
+#include "tri-gen.c"
+#include "tri-link.c"
 #else
 #error unknown target
 #endif
@@ -1008,8 +1011,11 @@ LIBTCCAPI int tcc_set_output_type(TCCState *s, int output_type)
 #else
     /* paths for crt objects */
     tcc_split_path(s, &s->crt_paths, &s->nb_crt_paths, CONFIG_TCC_CRTPREFIX);
-    if (output_type != TCC_OUTPUT_MEMORY && !s->nostdlib)
+    if (output_type != TCC_OUTPUT_MEMORY && !s->nostdlib) {
+#ifndef TCC_TARGET_TRIRV
         tccelf_add_crtbegin(s); /* may produce errors */
+#endif
+    }
 #endif
     return s->nb_errors ? -1 : 0;
 }

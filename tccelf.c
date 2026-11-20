@@ -3225,6 +3225,10 @@ LIBTCCAPI int tcc_output_file(TCCState *s, const char *filename)
     s->nb_errors = 0;
     if (s->test_coverage)
         tcc_tcov_add_file(s, filename);
+#ifdef TCC_TARGET_TRIRV
+    if (s->output_type == TCC_OUTPUT_EXE || s->output_type == TCC_OUTPUT_OBJ)
+        return tri_output_file(s, filename);
+#endif
     if (s->output_type == TCC_OUTPUT_OBJ)
         return elf_output_obj(s, filename);
 #ifdef TCC_TARGET_PE

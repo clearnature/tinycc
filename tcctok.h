@@ -237,6 +237,8 @@
      DEF(TOK_builtin_va_arg, "__builtin_va_arg")
 #elif defined TCC_TARGET_RISCV64
      DEF(TOK_builtin_va_start, "__builtin_va_start")
+#elif defined TCC_TARGET_TRIRV
+     DEF(TOK_builtin_va_start, "__builtin_va_start")
 #endif
 
 /* atomic operations */
@@ -369,7 +371,7 @@
 #ifdef TCC_TARGET_RISCV64
      DEF(TOK___riscv64_clear_cache, "__riscv64_clear_cache")
 #endif
-#if defined TCC_TARGET_ARM64 || defined TCC_TARGET_RISCV64
+#if defined TCC_TARGET_ARM64 || defined TCC_TARGET_RISCV64 || defined TCC_TARGET_TRIRV
      DEF(TOK___addtf3, "__addtf3")
      DEF(TOK___subtf3, "__subtf3")
      DEF(TOK___multf3, "__multf3")
@@ -470,7 +472,7 @@
 #else
  DEF_ASMDIR(code64)
 #endif
-#if defined(TCC_TARGET_RISCV64)
+#if defined(TCC_TARGET_RISCV64) || defined(TCC_TARGET_TRIRV)
  DEF_ASMDIR(option)
 #endif
  DEF_ASMDIR(short)

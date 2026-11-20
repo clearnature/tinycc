@@ -3616,8 +3616,15 @@ ST_FUNC int type_size(CType *type, int *a)
 #else
         *a = 8;
 #endif
+#ifdef TCC_TARGET_TRIRV
+        *a = 1; return 9;                          /* double(TF64)/long long = 9 tryte */
+#endif
         return 8;
     } else if (bt == VT_INT || bt == VT_FLOAT) {
+#ifdef TCC_TARGET_TRIRV
+        if (bt == VT_INT) { *a = 1; return 9; }   /* TriRV int = 45 trit = 9 tryte */
+        *a = 1; return 4;                          /* float = TF32 = 4 tryte */
+#endif
         *a = 4;
         return 4;
     } else if (bt == VT_SHORT) {
