@@ -1136,6 +1136,33 @@ ST_FUNC void gen_cvt_ftoi(int t)
     o(TRI_ENC_R(TRI_FCVT_W_OP, TRI_FCVT_W_FUNCT2, 0, fr, TRI_FCVT_W_FUNCT, ireg(dr)));
 }
 
+/* R 值窄化（寄存器驻留值）：char → mod 243、short → mod 59049；有符号再
+ * 5/10-trit 符号扩展（阈值 122/29525，3^k 偶容量恰平衡）。对齐硬件 SB/LB/LBU
+ * 与 trirv_cc:2350。内存驻留值无需此路径——LBU/LH 读低 tryte 天然 mod。 */
+ST_FUNC void gen_cvt_tri_narrow(int bt, int uns)
+{
+    int rr = ireg(gv(RC_INT));
+    int d;
+    int mod = (bt == VT_BYTE) ? 243 : 59049;
+    int half = (bt == VT_BYTE) ? 122 : 29525;
+    vtop--;
+    d = get_reg(RC_INT);
+    vtop++;
+    vtop->r = d;
+    d = ireg(d);
+    if (mod == 243) TRI_ADDI(TRI_T0, 0, 243);
+    else o(TRI_ENC_U(TRI_OP_LUI, 27, TRI_T0));   /* 27×3^7 = 59049 */
+    o(TRI_ENC_R(TRI_REMU_OP, TRI_REMU_FUNCT2, TRI_T0, rr, TRI_REMU_FUNCT, d)); /* d = rr mod */
+    if (!uns) {
+        /* 符号扩展：d ≥ half → d -= mod（SLTU+SEQZ_NOT+MUL+SUB） */
+        TRI_ADDI(TRI_T1, 0, half);
+        o(TRI_ENC_R(TRI_SLTU_OP, TRI_SLTU_FUNCT2, TRI_T1, d, TRI_SLTU_FUNCT, TRI_T1)); /* t1 = d<half */
+        TRI_SEQZ_NOT(TRI_T1);                    /* t1 = d>=half */
+        o(TRI_ENC_R(TRI_MUL_OP, TRI_MUL_FUNCT2, TRI_T0, TRI_T1, TRI_MUL_FUNCT, TRI_T1));
+        o(TRI_ENC_R(TRI_SUB_OP, TRI_SUB_FUNCT2, TRI_T1, d, TRI_SUB_FUNCT, d));  /* d -= flag×mod */
+    }
+}
+
 ST_FUNC void gen_cvt_ftof(int dt)
 {
     /* float/double/long double 统一 TF64 档（type_size 均 9 tryte）——

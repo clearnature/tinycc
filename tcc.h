@@ -1772,6 +1772,7 @@ ST_FUNC void gen_clear_cache(void);
 #ifdef TCC_TARGET_TRIRV
 ST_FUNC int tri_output_file(TCCState *s1, const char *filename);
 ST_FUNC unsigned __int128 tri_tf64_raw(double v);   /* TF64 编码（init_putv 常量池用） */
+ST_FUNC void gen_cvt_tri_narrow(int bt, int uns);   /* R 值窄化 mod-243/59049（gen_cast 用） */
 ST_FUNC void gen_opl(int op);
 ST_FUNC void gen_va_start(void);
 ST_FUNC void arch_transfer_ret_regs(int);

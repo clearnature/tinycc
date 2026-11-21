@@ -18,6 +18,14 @@
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
+/* TriRV 对齐 = 9 tryte（非 2 的幂）——掩码圆整 (c+a-1)&-a 对 a=9 清 bit3
+   而非圆整（struct{char c; int *p} 的 p 曾落 offset 1/8），必须整除式圆整。
+   拍板 2026-11-21：成员起始一律 9-对齐、尺寸 9-圆整（ABI §6 = trirv_cc 现状） */
+#ifdef TCC_TARGET_TRIRV
+#define TRI_ALIGN_UP(c, a)   ((((c) + (a) - 1) / (a)) * (a))
+#define TRI_ALIGN_DOWN(c, a) ((c) - ((((c) % (a)) + (a)) % (a)))
+#endif
+
 #define USING_GLOBALS
 #include "tcc.h"
 
@@ -1579,7 +1587,11 @@ ret_tmp:
 	    return temp_var->location;
 	}
     }
+#ifdef TCC_TARGET_TRIRV
+    loc = TRI_ALIGN_DOWN(loc - size, align);
+#else
     loc = (loc - size) & -align;
+#endif
     if (nb_temp_local_vars<MAX_TEMP_LOCAL_VARIABLE_NUMBER) {
 	temp_var=&arr_temp_local_vars[i];
 	temp_var->location=loc;
@@ -3425,12 +3437,27 @@ error:
                 else if (dbt == VT_BOOL)
                     vtop->c.i = (vtop->c.i != 0);
                 else {
-                    uint32_t m = dbt_bt == VT_BYTE ? 0xff :
-                                 dbt_bt == VT_SHORT ? 0xffff :
-                                  0xffffffff;
-                    vtop->c.i &= m;
-                    if (!(dbt & VT_UNSIGNED))
-                        vtop->c.i |= -(vtop->c.i & ((m >> 1) + 1));
+#if defined TCC_TARGET_TRIRV
+                    /* char/short = tryte 域（拍板 2026-11-21：截断 mod 243/59049，
+                       unsigned 0..242 / signed -121..121）——与硬件 SB/LB/LBU、
+                       trirv_cc、charsign 契约一致；0xff/0xffff 是宿主口径 */
+                    if (dbt_bt == VT_BYTE || dbt_bt == VT_SHORT) {
+                        long long mod = dbt_bt == VT_BYTE ? 243 : 59049;
+                        long long half = dbt_bt == VT_BYTE ? 122 : 29525;
+                        long long t = ((vtop->c.i % mod) + mod) % mod;
+                        if (!(dbt & VT_UNSIGNED) && t >= half)
+                          t -= mod;
+                        vtop->c.i = t;
+                    } else
+#endif
+                    {
+                        uint32_t m = dbt_bt == VT_BYTE ? 0xff :
+                                     dbt_bt == VT_SHORT ? 0xffff :
+                                      0xffffffff;
+                        vtop->c.i &= m;
+                        if (!(dbt & VT_UNSIGNED))
+                            vtop->c.i |= -(vtop->c.i & ((m >> 1) + 1));
+                    }
                 }
             }
             goto done;
@@ -3564,6 +3591,15 @@ error:
         goto done;
     }
 #endif
+#if defined TCC_TARGET_TRIRV
+        /* 寄存器驻留值的窄化：char→mod 243、short→mod 59049（tryte 域）。
+           内存驻留值走 ALLOW_SUBTYPE_ACCESS 的 LBU/LH 读——读低 tryte 天然
+           mod（拍板后的正确行为），勿扰。 */
+        if (dbt_bt == VT_BYTE || dbt_bt == VT_SHORT) {
+            gen_cvt_tri_narrow(dbt_bt, dbt & VT_UNSIGNED);
+            goto done;
+        }
+#endif
         bits = (ss - ds) * 8;
         /* for unsigned, gen_op will convert SAR to SHR */
         vtop->type.t = (ss == 8 ? VT_LLONG : VT_INT) | (dbt & VT_UNSIGNED);
@@ -3618,15 +3654,13 @@ ST_FUNC int type_size(CType *type, int *a)
         *a = 8;
 #endif
 #ifdef TCC_TARGET_TRIRV
-        *a = 1; return 9;                          /* double(TF64)/long long = 9 tryte */
+        *a = 9; return 9;                          /* double(TF64)/long long = 9 tryte，9-对齐 */
 #endif
         return 8;
     } else if (bt == VT_INT || bt == VT_FLOAT) {
 #ifdef TCC_TARGET_TRIRV
-        if (bt == VT_INT) { *a = 1; return 9; }   /* TriRV int = 45 trit = 9 tryte */
-        *a = 1; return 9;                          /* float 统一 TF64 档 = 9 tryte
-                                                      （FLW/FSW 搬 45-trit raw，
-                                                      TF32 档位留待后续） */
+        *a = 9; return 9;    /* int/float = 45 trit = 9 tryte，9-对齐（ABI §4：
+                                char 占 1，其余占 9；成员起始一律 9-对齐） */
 #endif
         *a = 4;
         return 4;
@@ -4256,8 +4290,19 @@ static void parse_one_gnu_attribute(int t, AttributeDef *ad)
         case TOK_ALIGNED2:
             if (tok == '(') {
                 next();
+#if defined TCC_TARGET_TRIRV
+                /* TriRV：对齐由 ABI 固定（成员起始/尺寸整除式 9-对齐），
+                   aligned(N) 属性退化为 no-op——只吃掉 N 与 ')' 不写
+                   a.aligned（属性编码 2^k-only，MAX_ALIGN=9 装不下）；
+                   tccpp predef 里 max_align_t 的 aligned(16) 由此通过。 */
                 n = expr_const();
-                if (n <= 0 || (n & (n - 1)) != 0) 
+                if (n <= 0)
+                  tcc_error("alignment must be positive");
+                skip(')');
+                break;
+#endif
+                n = expr_const();
+                if (n <= 0 || (n & (n - 1)) != 0)
                     tcc_error("alignment must be a positive power of two");
                 skip(')');
             } else {
@@ -4545,7 +4590,11 @@ static void struct_layout(CType *type, AttributeDef *ad)
 	} else if (bit_size < 0) {
             if (pcc)
                 c += (bit_pos + 7) >> 3;
+#ifdef TCC_TARGET_TRIRV
+	    c = TRI_ALIGN_UP(c, 9);            /* ABI §6：成员起始一律 9-对齐 */
+#else
 	    c = (c + align - 1) & -align;
+#endif
 	    offset = c;
 	    if (size > 0)
 	        c += size;
@@ -4597,7 +4646,11 @@ static void struct_layout(CType *type, AttributeDef *ad)
 		if ((bit_pos + bit_size > size * 8)
                     || (bit_size > 0) == (bt != prevbt)
                     ) {
-		    c = (c + align - 1) & -align;
+	#ifdef TCC_TARGET_TRIRV
+	    c = TRI_ALIGN_UP(c, 9);            /* ABI §6：成员起始一律 9-对齐 */
+#else
+	    c = (c + align - 1) & -align;
+#endif
 		    offset = c;
 		    bit_pos = 0;
 		    /* In MS bitfield mode a bit-field run always uses
@@ -4655,7 +4708,11 @@ static void struct_layout(CType *type, AttributeDef *ad)
         if (a < bt)
             a = bt;
     }
+#ifdef TCC_TARGET_TRIRV
+    c = TRI_ALIGN_UP(c, 9);                /* 尺寸 9-圆整（trirv_cc struct_def 同款） */
+#else
     c = (c + a - 1) & -a;
+#endif
     type->ref->c = c;
 
 #ifdef BF_DEBUG
@@ -7109,7 +7166,11 @@ special_math_val:
                     while (size & (size - 1))
                         size = (size | (size - 1)) + 1;
 #endif
+#ifdef TCC_TARGET_TRIRV
+                    loc = TRI_ALIGN_DOWN(loc - size, align);
+#else
                     loc = (loc - size) & -align;
+#endif
                     ret.type = s->type;
                     ret.r = VT_LOCAL | VT_LVAL;
                     /* pass it as 'int' to avoid structure arg passing
@@ -7218,7 +7279,11 @@ special_math_val:
                     size = (size + regsize - 1) & -regsize;
                     if (ret_align > align)
                         align = ret_align;
+#ifdef TCC_TARGET_TRIRV
+                    loc = TRI_ALIGN_DOWN(loc - size, align);
+#else
                     loc = (loc - size) & -align;
+#endif
                     addr = loc;
                     offset = 0;
                     for (;;) {
@@ -7713,7 +7778,11 @@ static void gfunc_return(CType *func_type)
 		    size = ret_nregs * regsize;
 		if (ret_align > align)
 		    align = ret_align;
+#ifdef TCC_TARGET_TRIRV
+                loc = TRI_ALIGN_DOWN(loc - size, align);
+#else
                 loc = (loc - size) & -align;
+#endif
                 addr = loc;
                 type = *func_type;
                 vset(&type, VT_LOCAL | VT_LVAL, addr);
@@ -9337,7 +9406,11 @@ static void decl_initializer_alloc(CType *type, AttributeDef *ad, int r,
             loc -= align;
         }
 #endif
+#ifdef TCC_TARGET_TRIRV
+        loc = TRI_ALIGN_DOWN(loc - size, align);
+#else
         loc = (loc - size) & -align;
+#endif
         addr = loc;
         p.local_offset = addr + size;
 #ifdef CONFIG_TCC_BCHECK
