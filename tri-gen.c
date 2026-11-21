@@ -169,12 +169,16 @@ static void tri_lui_load_idx(unsigned rr, int elf_idx, int addend)
 /* ---- 跳转与补丁链 ---- */
 ST_FUNC void gsym_addr(int t_, int a_)
 {
-    uint32_t t = t_, a = a_;
+    uint32_t t = t_;
     while (t) {
         unsigned char *ptr = cur_text_section->data + t;
         uint32_t next = read32le(ptr);
-        int slot_off = (int)((a - t) / 4);
-        assert(((a - t) & 3) == 0);
+        /* 坑实录：曾用 uint32_t 的 (a - t) 做槽差——无符号减法对后向跳转
+           回绕（(64-96) → 4294967264 → /4 = 1073741816 槽），JAL 编成垃圾。
+           前向（if/else、while 退出）侥幸全对，第一个后向用例（for 的
+           continue 绑定 a<site）由双工具链差分套件暴露。 */
+        int slot_off = (int)((a_ - (int)t) / 4);
+        assert(((a_ - (int)t) & 3) == 0);
         write32le(ptr, TRI_ENC_U(TRI_OP_JAL, slot_off, 0));
         t = next;
     }
