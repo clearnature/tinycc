@@ -475,56 +475,17 @@ static int tri_mem_funct(int size, int *ok)
 
 /* ---- TF45 编码（对齐 trirv_float.py TF45.encode：exp_trits=10, mant_trits=34,
  * bias=29524）---- raw = s·3^44 + E·3^34 + M，v = ±(M/3^33)×3^(E-29524)。
- * 整数精确（__int128），支持 exp3 ∈ [-14, 47]（|v| ∈ [2.1e-7, 4.3e7]）；
- * 域外诚实报错（bignum 编码器留待后续，musl 极端常量经 Python 管线）。 ---- */
+ * long double 路径（arm64 宿主 = 128-bit quad，113-bit 尾数）：全 double 值域
+ * 覆盖（exp3 ∈ [-678, 646]）。精确性论证：M = round(mant×3^33) 需 54 bit
+ * 有效位，113-bit 中间精度的绝对误差 ≈ 1.7e16×2^-113 ≈ 2e-18 ≪ 0.5 → 非平局
+ * 情形精确。已知边界（记档）：平局（a×3^(33-e) 恰为 x.5，可构造）舍入方向
+ * 可能翻转——powl 误差 2^-113 下无法区分；实际常量命中概率 ~0。
+ * e 边界判定可靠性：相邻 3 倍间隔 ≫ powl 相对误差；a 为 double（53-bit），
+ * e>33 时 3^e 非双精度可表 → a 距边界至少 2^-53 相对 → 判定绝对可靠。 ---- */
 #define TRI_TF_P_MANT   ((__int128)3486784401LL * 4782969LL)      /* 3^34 */
 #define TRI_TF_P_SIGN   (TRI_TF_P_MANT * 59049)                    /* 3^44 */
 #define TRI_TF_MAX_EXP  59048L
 #define TRI_TF_BIAS     29524L
-
-/* 比较 lhs×2^e2 与 rhs（rhs > 0，均为 __int128 域内）→ -1/0/1（精确，
- * 除法用商+余数：lhs×2^e2 = q + rem/2^k，q > rhs 必大、q < rhs 必小、
- * q == rhs 时看 rem） */
-static int tri_cmp_pow2(__int128 lhs, int e2, __int128 rhs)
-{
-    if (e2 >= 0) {
-        __int128 l2 = lhs << e2;
-        return l2 < rhs ? -1 : (l2 > rhs ? 1 : 0);
-    }
-    {
-        int k = -e2;
-        __int128 q, rem;
-        if (k >= 127) { q = 0; rem = lhs; }
-        else {
-            q = lhs >> k;
-            rem = lhs & (((( __int128)1) << k) - 1);
-        }
-        if (q < rhs) return -1;
-        if (q > rhs) return 1;
-        return rem == 0 ? 0 : 1;
-    }
-}
-
-/* 比较 mi×2^e2 与 3^e（mi ∈ [2^52,2^53)，|e| ≤ 48）→ -1/0/1（精确）。
- * 坑实录：旧版对 e<0 的 rhs 恒为 1（for i<e 不执行）——修正环
- * while(cmp3(e+1)>=0) e++ 永真 → 编译器死循环（float域 0.5 探针暴露）。 */
-static int tri_cmp3(unsigned long long mi, int e2, long e)
-{
-    __int128 lhs = mi;
-    if (e < 0) {
-        /* a vs 3^e ⟺ (mi×2^e2)×3^(-e) vs 1（|e| ≤ 48 → mi×3^48 ≤ 2.2e38 ✓） */
-        long i;
-        for (i = 0; i < -e; i++) lhs *= 3;
-        if (e2 >= 0) return 1;                    /* ≥ 2^52 > 1 */
-        return tri_cmp_pow2(lhs, e2, 1);          /* lhs×2^e2 vs 1 */
-    }
-    {
-        __int128 rhs = 1;
-        long i;
-        for (i = 0; i < e; i++) rhs *= 3;
-        return tri_cmp_pow2(lhs, e2, rhs);
-    }
-}
 
 ST_FUNC unsigned __int128 tri_tf45_raw(double v)
 {
@@ -535,40 +496,30 @@ ST_FUNC unsigned __int128 tri_tf45_raw(double v)
       return signbit(v) ? TRI_TF_P_SIGN : 0;
     {
         int s = v < 0;
-        double a = fabs(v);
-        int e2;
-        double mm = frexp(a, &e2);
-        unsigned long long mi = (unsigned long long)ldexp(mm, 53);  /* 精确整数 */
-        long e, shift, i;
-        __int128 M, E, num, den;
-        e2 -= 53;                        /* a = mi × 2^e2（精确分解） */
-        e = (long)((52.0 + e2) / 1.5849625007211563);   /* log2(3) 估计 */
-        if (e < -60 || e > 60)
-          tcc_error("TriRV: float constant %.17g outside exact encode range", v);
-        {   /* 修正环（±保险：估计误差应 ≤2，超限即错不悬挂） */
+        long double la = fabsl((long double)v);
+        long e = (long)floorl(logl(la) / logl(3.0L));
+        long E;
+        __int128 M;
+        /* 边界修正（±保险：logl 估计误差应 ≤2，超限即错不悬挂） */
+        {
             int guard = 0;
-            while (tri_cmp3(mi, e2, e) < 0) {
+            while (la < powl(3.0L, (long double)e)) {
                 if (++guard > 8) tcc_error("TriRV: float encode e-underflow (%.17g)", v);
                 e--;
             }
             guard = 0;
-            while (tri_cmp3(mi, e2, e + 1) >= 0) {
+            while (la >= powl(3.0L, (long double)(e + 1))) {
                 if (++guard > 8) tcc_error("TriRV: float encode e-overflow (%.17g)", v);
                 e++;
             }
         }
-        if (e < -14 || e > 47)
-          tcc_error("TriRV: float constant %.17g beyond __int128 encode window "
-                    "(|exp3| <= 47, |v| in [2.1e-7, 4.3e7])", v);
-        /* M = round-half-up(mi × 3^(33-e) / 2^(-e2))，落 [3^33, 3^34) */
-        shift = 33 - e;
-        num = mi;
-        den = 1;
-        if (shift >= 0) { for (i = 0; i < shift; i++) num *= 3; }
-        else            { for (i = 0; i < -shift; i++) den *= 3; }
-        if (e2 >= 0) num <<= e2;
-        else         den <<= -e2;
-        M = (2 * num + den) / (2 * den);
+        /* mant = a / 3^e ∈ [1,3)（113-bit 精度）；M = round-half-up(mant×3^33)
+         * ∈ [3^33, 3^34)，54 bit——long double 下精确（非平局） */
+        {
+            long double mant = la / powl(3.0L, (long double)e);
+            long double mx = mant * powl(3.0L, 33.0L);
+            M = (__int128)floorl(mx + 0.5L);
+        }
         E = e + TRI_TF_BIAS;
         if (M >= TRI_TF_P_MANT) { M /= 3; E += 1; }
         if (E >= TRI_TF_MAX_EXP)
