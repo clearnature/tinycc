@@ -2377,6 +2377,16 @@ static uint64_t value64(uint64_t l1, int t)
     if ((t & VT_BTYPE) == VT_LLONG
         || (PTR_SIZE == 8 && (t & VT_BTYPE) == VT_PTR))
         return l1;
+#if defined TCC_TARGET_TRIRV
+    /* TriRV int = 45 trit（全域 ≈2.95e21）> 2^32：VT_INT 常量不截 32 位——
+       保持词法的 64 位值（覆盖 |v| < 2^63 ≈ 3^38.7；超限字面量在 tccpp 词法
+       int64 上限诚实失败，>2^63 特殊值常量由 musl_tri 惰性运行时计算）。
+       坑实录：曾 32 位截断——strtod_tri 的 10^16/3^34 系数全错（T-2.4 暴露，
+       trirv_cc 同源码 oracle 全对——差异即此）。gen_opic 折叠仍 uint64
+       （§1.3 LP32 折叠拍板不变：分歧仅大数乘溢出场景，比 32 位截断严格更好）。 */
+    if ((t & VT_BTYPE) == VT_INT)
+        return l1;
+#endif
     else if (t & VT_UNSIGNED)
         return (uint32_t)l1;
     else
@@ -3406,10 +3416,18 @@ error:
                     else
                         vtop->c.ld = -(long double)-vtop->c.i;
                 } else if(!sf) {
-                    if ((sbt & VT_UNSIGNED) || !(vtop->c.i >> 31))
-                        vtop->c.ld = (uint32_t)vtop->c.i;
-                    else
-                        vtop->c.ld = -(long double)-(uint32_t)vtop->c.i;
+#if defined TCC_TARGET_TRIRV
+                    /* TriRV：VT_INT 源 64 位（>>31/(uint32) 是 32 位 int 口径） */
+                    if (sbt_bt == VT_INT) {
+                        vtop->c.ld = vtop->c.i;
+                    } else
+#endif
+                    {
+                        if ((sbt & VT_UNSIGNED) || !(vtop->c.i >> 31))
+                            vtop->c.ld = (uint32_t)vtop->c.i;
+                        else
+                            vtop->c.ld = -(long double)-(uint32_t)vtop->c.i;
+                    }
                 }
 
                 if (dbt == VT_FLOAT)
@@ -3427,6 +3445,11 @@ error:
                 }
                 else if (sbt_bt == VT_LLONG || (PTR_SIZE == 8 && sbt == VT_PTR))
                     ;
+#if defined TCC_TARGET_TRIRV
+                /* 源端 VT_INT 同 value64：不截 32 位（45-trit 域） */
+                else if (sbt_bt == VT_INT)
+                    ;
+#endif
                 else if (sbt & VT_UNSIGNED)
                     vtop->c.i = (uint32_t)vtop->c.i;
                 else
@@ -3438,9 +3461,13 @@ error:
                     vtop->c.i = (vtop->c.i != 0);
                 else {
 #if defined TCC_TARGET_TRIRV
-                    /* char/short = tryte 域（拍板 2026-11-21：截断 mod 243/59049，
-                       unsigned 0..242 / signed -121..121）——与硬件 SB/LB/LBU、
-                       trirv_cc、charsign 契约一致；0xff/0xffff 是宿主口径 */
+                    /* TriRV 完整分支链（坑实录：曾写成 "if(B/S){...} else if(INT);"，
+                       #endif 后的 uint32 块变无条件执行——VT_INT 豁免被二次掩码
+                       击穿；char 57 碰巧再掩无害，5e9 被截成 705032704）。
+                       char/short = tryte 域（拍板 2026-11-21：mod 243/59049，
+                       unsigned 0..242 / signed -121..121，与硬件 SB/LB/LBU、
+                       trirv_cc、charsign 契约一致）；VT_INT = 45-trit 全域不掩码
+                       （同 value64）。 */
                     if (dbt_bt == VT_BYTE || dbt_bt == VT_SHORT) {
                         long long mod = dbt_bt == VT_BYTE ? 243 : 59049;
                         long long half = dbt_bt == VT_BYTE ? 122 : 29525;
@@ -3448,8 +3475,15 @@ error:
                         if (!(dbt & VT_UNSIGNED) && t >= half)
                           t -= mod;
                         vtop->c.i = t;
-                    } else
-#endif
+                    } else if (dbt_bt == VT_INT)
+                        ;
+                    else {
+                        uint32_t m = 0xffffffff;
+                        vtop->c.i &= m;
+                        if (!(dbt & VT_UNSIGNED))
+                            vtop->c.i |= -(vtop->c.i & ((m >> 1) + 1));
+                    }
+#else
                     {
                         uint32_t m = dbt_bt == VT_BYTE ? 0xff :
                                      dbt_bt == VT_SHORT ? 0xffff :
@@ -3458,6 +3492,7 @@ error:
                         if (!(dbt & VT_UNSIGNED))
                             vtop->c.i |= -(vtop->c.i & ((m >> 1) + 1));
                     }
+#endif
                 }
             }
             goto done;
