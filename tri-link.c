@@ -98,16 +98,16 @@ static addr_t tri_sym_final(TCCState *s1, int symidx, int for_data)
     return tri_get_section_base(s1, sec) + es->st_value;
 }
 
-/* 符号终址：sym->c = symtab 索引；st_value = 段内偏移（finalize 前） */
-static addr_t tri_sym_addr(TCCState *s1, Sym *sym)
+/* 补丁符号解析：优先 elf_idx（补丁创建时快照，Sym 尚存活、索引精确），
+   未定义过的按名查 symtab（extern 声明在先、定义在后续 TU——声明 Sym 的
+   c 恒 0，跨 TU 解析靠名字）。均落空 → unresolved（对齐链接器语义）。 */
+static addr_t tri_patch_symbol(TCCState *s1, const char *name, int elf_idx)
 {
-    int idx = sym->c;
+    int idx = (elf_idx > 0) ? elf_idx
+            : (name ? find_elf_sym(s1->symtab, name) : 0);
     if (idx <= 0) {
-        /* 代码引用（tri_lui_load 补丁）不建 ELF 符号条目——sym->c=0 只会
-           发生在"全 TU 从未定义"的符号上（定义过的全局必有条目）。
-           坑实录：writer 期用 get_tok_str(sym->v) 取名崩溃（EXC_BAD_ACCESS，
-           lldb 定位）——该函数仅解析期安全，此处不取名只报 unresolved。 */
-        fprintf(stderr, "TriRV: unresolved reference (symbol has no elf entry)\n");
+        fprintf(stderr, "TriRV: unresolved reference%s%s\n",
+                name ? " to '" : "", name ? name : "");
         exit(1);
     }
     return tri_sym_final(s1, idx, 0);
@@ -234,7 +234,7 @@ ST_FUNC int tri_output_file(TCCState *s1, const char *filename)
     for (i = 0; i < NTP; i++) {
         struct tri_patch *p = &TRI_PATCHES[i];
         /* 符号终址含 text 基址 20（tri_get_section_base 已赋 sh_addr） */
-        addr_t tgt = tri_sym_addr(s1, p->sym) + p->addend;
+        addr_t tgt = tri_patch_symbol(s1, p->name, p->elf_idx) + p->addend;
         if (p->kind == TRI_R_JAL_SLOT) {
             /* 补丁槽自身随 _start 前移（site 在 text 内 text_off 处） */
             int site_slot = (p->text_off + 20) / 4;

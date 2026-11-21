@@ -127,7 +127,13 @@ ST_FUNC void tri_add_patch(int kind, int text_off, Sym *sym, int addend, unsigne
     if (!(NTP & 15)) TRI_PATCHES = tcc_realloc(TRI_PATCHES, (NTP + 16) * sizeof *TRI_PATCHES);
     TRI_PATCHES[NTP].text_off = text_off;
     TRI_PATCHES[NTP].kind = kind;
-    TRI_PATCHES[NTP].sym = sym;
+    /* Sym 存活窗口内快照名字 + elf 索引（writer 期 Sym* 悬垂实证：
+       extern 声明与定义是不同 Sym（声明 c 恒 0）、static 符号 Sym 在其
+       TU 后回收——垃圾 c 曾致 "symbol #1719946136"。匿名符号（字符串
+       数据）无名但创建即有 elf 条目，靠 elf_idx 解析。 */
+    TRI_PATCHES[NTP].elf_idx = sym->c;
+    TRI_PATCHES[NTP].name = (sym->v >= SYM_FIRST_ANOM)
+        ? NULL : tcc_strdup(get_tok_str(sym->v, NULL));
     TRI_PATCHES[NTP].addend = addend;
     TRI_PATCHES[NTP].rd = rd;
     NTP++;
