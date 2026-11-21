@@ -8758,6 +8758,30 @@ static void write_ldouble(unsigned char *d, void *s)
     }
 }
 
+#if defined TCC_TARGET_TRIRV
+/* TriRV 静态初值编码：45-trit 字 = 9 tryte base-243 LE（VM 字语义
+   word = Σ tryte[i]·3^(5i)，raw 即位模式）。val 取 mod 3^45（负数 =
+   3^45+v；3^45≈2.95e21 超出 uint64，必须 __int128）。
+   坑实录：write32le/write64le 是 base-256——int g=1000 写 [232,3,0..]，
+   VM 按位读出 961（exit 193≠232），只有初值 <243 时两种基数巧合一致，
+   这正是旧 e2e（g=7/{10,20,30}）测不出的原因。 */
+static void tri_write_word45(unsigned char *ptr, int64_t val)
+{
+    unsigned __int128 v = (unsigned __int128)val;
+    int k;
+    if (val < 0)
+      v += (unsigned __int128)3486784401LL * 3486784401LL * 243;
+    for (k = 0; k < 9; k++) { ptr[k] = (unsigned char)(v % 243); v /= 243; }
+}
+/* short = 2 tryte = 10 trit，回绕在 3^10=59049（ternary-isa-design.md:430） */
+static void tri_write_short10(unsigned char *ptr, int64_t val)
+{
+    unsigned v = (unsigned)(((val % 59049) + 59049) % 59049);
+    ptr[0] = (unsigned char)(v % 243);
+    ptr[1] = (unsigned char)((v / 243) % 243);
+}
+#endif
+
 /* store a value or an expression directly in global data or in local array */
 static void init_putv(init_params *p, CType *type, unsigned long c)
 {
@@ -8784,7 +8808,11 @@ static void init_putv(init_params *p, CType *type, unsigned long c)
 
         if ((vtop->r & VT_SYM)
             && bt != VT_PTR
+#if PTR_SIZE == 8 || defined TCC_TARGET_TRIRV
+            && (bt != VT_LLONG       /* TriRV：9-tryte 符号指针初值合法（VT_LLONG 同宽） */
+#else
             && (bt != (PTR_SIZE == 8 ? VT_LLONG : VT_INT)
+#endif
                 || (type->t & VT_BITFIELD))
             && !((vtop->r & VT_CONST) && vtop->sym->v >= SYM_FIRST_ANOM)
             )
@@ -8827,8 +8855,8 @@ static void init_putv(init_params *p, CType *type, unsigned long c)
 				   c + rel->r_offset - esym->st_value,
 				   ELFW(R_TYPE)(rel->r_info),
 				   ELFW(R_SYM)(rel->r_info),
-#if PTR_SIZE == 8
-				   rel->r_addend
+#if PTR_SIZE == 8 || defined TCC_TARGET_TRIRV
+				   rel->r_addend    /* TriRV 走 64-bit 类（Elf64_Rela），addend 必须保留 */
 #else
 				   0
 #endif
@@ -8858,10 +8886,18 @@ static void init_putv(init_params *p, CType *type, unsigned long c)
 		*(char *)ptr = val != 0;
                 break;
 	    case VT_BYTE:
+#if defined TCC_TARGET_TRIRV
+                *(unsigned char *)ptr = (unsigned char)(((val % 243) + 243) % 243); /* 1 tryte，mod-243 与 LB 符号扩展兼容 */
+#else
 		*(char *)ptr = val;
+#endif
 		break;
 	    case VT_SHORT:
+#if defined TCC_TARGET_TRIRV
+                tri_write_short10(ptr, val);
+#else
                 write16le(ptr, val);
+#endif
 		break;
 	    case VT_FLOAT:
                 write32le(ptr, val);
@@ -8879,11 +8915,20 @@ static void init_putv(init_params *p, CType *type, unsigned long c)
 	    case VT_PTR:
 	        if (vtop->r & VT_SYM)
 	          greloca(sec, vtop->sym, c, R_DATA_PTR, val);
+#if defined TCC_TARGET_TRIRV
+	        else
+	          tri_write_word45(ptr, val);
+#else
 	        else
 	          write64le(ptr, val);
+#endif
 	        break;
             case VT_INT:
+#if defined TCC_TARGET_TRIRV
+                tri_write_word45(ptr, val);
+#else
                 write32le(ptr, val);
+#endif
                 break;
 #else
 	    case VT_LLONG:

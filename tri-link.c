@@ -48,6 +48,11 @@ static addr_t tri_get_section_base(TCCState *s1, Section *sec)
         TRI_SEC_DATA   = data_section;
         TRI_SEC_BSS    = bss_section;
         TRI_SEC_COMMON = common_section;
+        /* text 基址 = 5 槽 _start 前置（20 字节）——符号终址一次到位。
+           坑实录：曾只给 rodata/data/bss/common 赋 sh_addr，text 恒 0，
+           数据回填与 JAL 补丁各自散落 +20，TRI_R_LUI_ABS 分支漏加
+           （&f 探针 exit=0，f 终址应 20）。 */
+        if (text_section) text_section->sh_addr = 20;
         if (TRI_SEC_RODATA) { TRI_SEC_RODATA->sh_addr = pos; pos += TRI_SEC_RODATA->data_offset; }
         pos = (pos + 8) / 9 * 9;
         if (TRI_SEC_DATA)   { TRI_SEC_DATA->sh_addr   = pos; pos += TRI_SEC_DATA->data_offset; }
@@ -60,27 +65,56 @@ static addr_t tri_get_section_base(TCCState *s1, Section *sec)
     return sec->sh_addr;
 }
 
-/* 符号终址：sym->c = symtab 索引；st_value = 段内偏移（finalize 前） */
-static addr_t tri_sym_addr(TCCState *s1, Sym *sym)
+/* 符号节界与解析校验（UNDEF→weak 置 0 / 否则 unresolved 报错；
+   COMMON 干净报错；shndx 越界拒绝——曾对 UNDEF 取 sections[0]=NULL
+   解引用 SIGSEGV）。返回符号终址；弱未解析返回 0。 */
+static addr_t tri_sym_final(TCCState *s1, int symidx, int for_data)
 {
-    int idx = sym->c;
     ElfW(Sym) *es;
     Section *sec;
-    if (idx <= 0) {
-        fprintf(stderr, "TriRV: symbol has no elf entry\n");
+    if (symidx <= 0 || (unsigned)symidx >= s1->symtab->data_offset / sizeof(ElfW(Sym))) {
+        fprintf(stderr, "TriRV: symbol #%d has no elf entry\n", symidx);
         exit(1);
     }
-    es = (ElfW(Sym) *)s1->symtab->data + idx;
+    es = (ElfW(Sym) *)s1->symtab->data + symidx;
+    if (es->st_shndx == SHN_UNDEF) {
+        if (ELFW(ST_BIND)(es->st_info) == STB_WEAK)
+          return 0;
+        fprintf(stderr, "TriRV: unresolved reference to '%s'%s\n",
+                (char *)s1->symtab->data + es->st_name,
+                for_data ? " (data)" : "");
+        exit(1);
+    }
+    if (es->st_shndx == SHN_COMMON) {
+        fprintf(stderr, "TriRV: common symbol '%s' unsupported (avoid -fcommon)\n",
+                (char *)s1->symtab->data + es->st_name);
+        exit(1);
+    }
     if (es->st_shndx >= s1->nb_sections) {
-        fprintf(stderr, "TriRV: bad sym section\n");
+        fprintf(stderr, "TriRV: bad sym section #%d\n", es->st_shndx);
         exit(1);
     }
     sec = s1->sections[es->st_shndx];
     return tri_get_section_base(s1, sec) + es->st_value;
 }
 
+/* 符号终址：sym->c = symtab 索引；st_value = 段内偏移（finalize 前） */
+static addr_t tri_sym_addr(TCCState *s1, Sym *sym)
+{
+    int idx = sym->c;
+    if (idx <= 0) {
+        /* 代码引用（tri_lui_load 补丁）不建 ELF 符号条目——sym->c=0 只会
+           发生在"全 TU 从未定义"的符号上（定义过的全局必有条目）。
+           坑实录：writer 期用 get_tok_str(sym->v) 取名崩溃（EXC_BAD_ACCESS，
+           lldb 定位）——该函数仅解析期安全，此处不取名只报 unresolved。 */
+        fprintf(stderr, "TriRV: unresolved reference (symbol has no elf entry)\n");
+        exit(1);
+    }
+    return tri_sym_final(s1, idx, 0);
+}
+
 /* 数据段重定位回填：R_DATA_PTR → 目标地址（45-trit 字，9 tryte LE）
- * 写入段数据 r_offset 处。文本符号（函数指针）+20B 前移。 */
+ * 写入段数据 r_offset 处。文本符号地址经 text sh_addr=20 一次到位。 */
 static Section *tri_find_section(TCCState *s1, const char *name)
 {
     int i;
@@ -104,17 +138,14 @@ static void tri_apply_data_relocs(TCCState *s1, Section *sec)
         ElfW_Rel *relp = (ElfW_Rel *)rel->data + i;
         int symidx = ELFW(R_SYM)(relp->r_info);
         int type = ELFW(R_TYPE)(relp->r_info);
-        ElfW(Sym) *es = (ElfW(Sym) *)s1->symtab->data + symidx;
-        Section *tsec = s1->sections[es->st_shndx];
-        addr_t base = tri_get_section_base(s1, tsec);
         addr_t val;
         int k;
         uint64_t v;
-        if (tsec == text_section)
-          base += 20;                        /* 文本符号随 _start 前移 */
         if (type != R_DATA_PTR && type != R_DATA_32)
           continue;
-        val = base + es->st_value + (addr_t)relp->r_addend;
+        /* UNDEF→weak 置 0 / 否则 unresolved 报错（曾对 UNDEF 取
+           sections[0]=NULL 解引用 SIGSEGV，extern 探针暴露） */
+        val = tri_sym_final(s1, symidx, 1) + (addr_t)relp->r_addend;
         /* 45-trit 值按 base-243 小端写 9 tryte */
         v = (uint64_t)val;
         for (k = 0; k < 9; k++) {
@@ -159,16 +190,34 @@ ST_FUNC int tri_output_file(TCCState *s1, const char *filename)
         }
         es = (ElfW(Sym) *)s1->symtab->data + idx;
         main_addr = tri_get_section_base(s1, s1->sections[es->st_shndx]) + es->st_value;
+        /* _start JAL 目标必须用 text 内相对槽（st_value）：tri_sym_addr 返回
+           绝对地址（含 text 基址 20），直接 /4 会把前置 5 槽再补一次——
+           JAL 跳过序言、ra 未保存、ret 到 0、程序重启（位游标探针暴露）。 */
+        main_addr = es->st_value;
     }
 
     /* 段清单：只写 rodata/data（bss/common 是零初始化，VM 内存天然为零，
        其 sec->data 为 NULL——f6 char 数组踩坑；地址仍经 tri_get_section_base
-       分配给符号补丁） */
+       分配给符号补丁）。其余 ALLOC 节诚实报错（曾静默丢弃：
+       __attribute__((section(".foo"))) 全局直接消失、无任何警告）。 */
     {
         Section *cand[2] = { rodata_section, data_section };
         for (i = 0; i < 2; i++)
           if (cand[i] && cand[i]->data_offset > 0 && cand[i]->data)
             segs[nsegc++] = cand[i];
+        for (i = 0; i < s1->nb_sections; i++) {
+            Section *sec = s1->sections[i];
+            if (!sec || sec == text_section || sec == cand[0] ||
+                sec == cand[1] || sec == bss_section || sec == common_section)
+              continue;
+            /* .eh_frame 是 tcc 自生成元数据：TRV1 无展开器，历来丢弃（无害）；
+               其余用户 ALLOC 节（如 __attribute__((section))）诚实报错 */
+            if ((sec->sh_flags & SHF_ALLOC) && sec->sh_type != SHT_NOBITS &&
+                sec->data_offset > 0 && strncmp(sec->name, ".eh_", 4) != 0) {
+                fprintf(stderr, "TriRV: unsupported alloc section '%s'\n", sec->name);
+                exit(1);
+            }
+        }
     }
 
     out = tcc_malloc(n_inst * 4);
@@ -184,10 +233,10 @@ ST_FUNC int tri_output_file(TCCState *s1, const char *filename)
     /* 补丁回填 */
     for (i = 0; i < NTP; i++) {
         struct tri_patch *p = &TRI_PATCHES[i];
+        /* 符号终址含 text 基址 20（tri_get_section_base 已赋 sh_addr） */
         addr_t tgt = tri_sym_addr(s1, p->sym) + p->addend;
         if (p->kind == TRI_R_JAL_SLOT) {
-            /* 文本内符号随 _start 前置 20 字节平移；补丁槽自身也平移 */
-            tgt += 20;
+            /* 补丁槽自身随 _start 前移（site 在 text 内 text_off 处） */
             int site_slot = (p->text_off + 20) / 4;
             int delta = (int)(tgt / 4) - site_slot;
             out[p->text_off / 4 + 5] = TRI_ENC_U(TRI_OP_JAL, delta, p->rd);
