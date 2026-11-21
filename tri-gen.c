@@ -1130,10 +1130,9 @@ ST_FUNC void gen_cvt_ftoi(int t)
     dr = get_reg(RC_INT);
     vtop++;
     vtop->r = dr;
-    /* FCVT.W rd,fs1：TF64 → 整数。坑记档：VM 语义是 round-to-nearest
-       （trirv_float.py FCVT.W），非 C 的向零截断——(int)3.7 → 4。
-       ISA 语义偏差，待 ISA 层拍板（FTRUNC 或软件截断）。 */
-    o(TRI_ENC_R(TRI_FCVT_W_OP, TRI_FCVT_W_FUNCT2, 0, fr, TRI_FCVT_W_FUNCT, ireg(dr)));
+    /* FCVT.W.T rd,fs1：TF64 → 整数，向零截断（rtz）——C 的 (int) cast 语义
+       （拍板 2026-11-21 新指令；FCVT.W 的 round 语义保留给数学转换）。 */
+    o(TRI_ENC_R(TRI_FCVT_W_T_OP, TRI_FCVT_W_T_FUNCT2, 0, fr, TRI_FCVT_W_T_FUNCT, ireg(dr)));
 }
 
 /* R 值窄化（寄存器驻留值）：char → mod 243、short → mod 59049；有符号再

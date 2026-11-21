@@ -388,6 +388,10 @@ enum { TRI_FMT_R=0, TRI_FMT_I, TRI_FMT_S, TRI_FMT_B, TRI_FMT_U, TRI_FMT_J };
 #define TRI_FCVT_F_FUNCT 7u
 #define TRI_FCVT_F_FUNCT2 0u
 #define TRI_FCVT_F_FMT TRI_FMT_R
+#define TRI_FCVT_W_T_OP 20u
+#define TRI_FCVT_W_T_FUNCT 8u
+#define TRI_FCVT_W_T_FUNCT2 0u
+#define TRI_FCVT_W_T_FMT TRI_FMT_R
 #define TRI_FEQ_OP 21u
 #define TRI_FEQ_FUNCT 0u
 #define TRI_FEQ_FUNCT2 1u
