@@ -469,7 +469,7 @@ static int tri_mem_funct(int size, int *ok)
     }
 }
 
-/* ---- TF64 编码（对齐 trirv_float.py TF64.encode：exp_trits=10, mant_trits=34,
+/* ---- TF45 编码（对齐 trirv_float.py TF45.encode：exp_trits=10, mant_trits=34,
  * bias=29524）---- raw = s·3^44 + E·3^34 + M，v = ±(M/3^33)×3^(E-29524)。
  * 整数精确（__int128），支持 exp3 ∈ [-14, 47]（|v| ∈ [2.1e-7, 4.3e7]）；
  * 域外诚实报错（bignum 编码器留待后续，musl 极端常量经 Python 管线）。 ---- */
@@ -522,7 +522,7 @@ static int tri_cmp3(unsigned long long mi, int e2, long e)
     }
 }
 
-ST_FUNC unsigned __int128 tri_tf64_raw(double v)
+ST_FUNC unsigned __int128 tri_tf45_raw(double v)
 {
     if (isnan(v)) return (__int128)TRI_TF_MAX_EXP * TRI_TF_P_MANT + 1;
     if (isinf(v))
@@ -575,9 +575,9 @@ ST_FUNC unsigned __int128 tri_tf64_raw(double v)
 }
 
 /* 浮点常量 → rodata 9 tryte（base-243），返回 elf 符号索引（LUI 补丁用） */
-static int tri_tf64_rodata(double v)
+static int tri_tf45_rodata(double v)
 {
-    unsigned __int128 raw = tri_tf64_raw(v);
+    unsigned __int128 raw = tri_tf45_raw(v);
     int roff = rodata_section->data_offset;
     unsigned char *p = section_ptr_add(rodata_section, 9);
     int k;
@@ -597,7 +597,7 @@ ST_FUNC void load(int r, SValue *sv)
     int align, size = type_size(&sv->type, &align);
 
     if (bt == VT_FLOAT || bt == VT_DOUBLE || bt == VT_LDOUBLE) {
-        /* F 扩展（TF64）：LVAL → FLW fd,fc(base)；常量 → TF64 raw 编码进
+        /* F 扩展（TF45）：LVAL → FLW fd,fc(base)；常量 → TF45 raw 编码进
            rodata（9 tryte base-243）后 LUI t0 + FLW（TriRV 无 FMOV-imm，
            上游 riscv64 同款常量池形态）。FLW/FSW 搬 raw 与档位无关。 */
         if (fr & VT_LVAL) {
@@ -612,7 +612,7 @@ ST_FUNC void load(int r, SValue *sv)
             if (bt == VT_FLOAT) d = sv->c.f;
             else if (bt == VT_DOUBLE) d = sv->c.d;
             else d = (double)sv->c.ld;
-            idx = tri_tf64_rodata(d);
+            idx = tri_tf45_rodata(d);
             tri_lui_load_idx(TRI_T0, idx, 0);
             o(TRI_ENC_I(TRI_FLW_OP, 0, TRI_T0, 1, rr));  /* FLW fd,0(t0) */
             return;
@@ -1049,7 +1049,7 @@ static void gen_opil(int op)
 ST_FUNC void gen_opi(int op) { gen_opil(op); }
 ST_FUNC void gen_opl(int op) { gen_opil(op); }
 
-/* ---- 浮点运算（F 扩展 TF64 档；独立 freg 堆 fa0-fa7） ---- */
+/* ---- 浮点运算（F 扩展 TF45 档；独立 freg 堆 fa0-fa7） ---- */
 ST_FUNC void gen_opf(int op)
 {
     int a, b, d;
@@ -1118,7 +1118,7 @@ ST_FUNC void gen_cvt_itof(int t)
     dr = get_reg(RC_FLOAT);
     vtop++;
     vtop->r = dr;
-    /* FCVT.F fd,rs1：整数（45-trit 三进制读法）→ TF64（VM round 到 mant 精度） */
+    /* FCVT.F fd,rs1：整数（45-trit 三进制读法）→ TF45（VM round 到 mant 精度） */
     o(TRI_ENC_R(TRI_FCVT_F_OP, TRI_FCVT_F_FUNCT2, 0, rr, TRI_FCVT_F_FUNCT, freg(dr)));
 }
 
@@ -1130,7 +1130,7 @@ ST_FUNC void gen_cvt_ftoi(int t)
     dr = get_reg(RC_INT);
     vtop++;
     vtop->r = dr;
-    /* FCVT.W.T rd,fs1：TF64 → 整数，向零截断（rtz）——C 的 (int) cast 语义
+    /* FCVT.W.T rd,fs1：TF45 → 整数，向零截断（rtz）——C 的 (int) cast 语义
        （拍板 2026-11-21 新指令；FCVT.W 的 round 语义保留给数学转换）。 */
     o(TRI_ENC_R(TRI_FCVT_W_T_OP, TRI_FCVT_W_T_FUNCT2, 0, fr, TRI_FCVT_W_T_FUNCT, ireg(dr)));
 }
@@ -1164,8 +1164,8 @@ ST_FUNC void gen_cvt_tri_narrow(int bt, int uns)
 
 ST_FUNC void gen_cvt_ftof(int dt)
 {
-    /* float/double/long double 统一 TF64 档（type_size 均 9 tryte）——
-       TF32 档（funct2=0 算术）留待后续；C 的 float 精度损失不建模，记档。 */
+    /* float/double/long double 统一 TF45 档（type_size 均 9 tryte）——
+       TF20 档（funct2=0 算术）留待后续；C 的 float 精度损失不建模，记档。 */
 }
 ST_FUNC void gen_cvt_sxtw(void) { /* 45-trit 单宽，无 32→64 问题：no-op */ }
 ST_FUNC void gen_cvt_csti(int t) { tcc_error("TriRV spike: gen_cvt_csti"); }

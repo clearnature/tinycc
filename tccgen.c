@@ -3654,7 +3654,7 @@ ST_FUNC int type_size(CType *type, int *a)
         *a = 8;
 #endif
 #ifdef TCC_TARGET_TRIRV
-        *a = 9; return 9;                          /* double(TF64)/long long = 9 tryte，9-对齐 */
+        *a = 9; return 9;                          /* double(TF45)/long long = 9 tryte，9-对齐 */
 #endif
         return 8;
     } else if (bt == VT_INT || bt == VT_FLOAT) {
@@ -8973,8 +8973,8 @@ static void init_putv(init_params *p, CType *type, unsigned long c)
 		break;
 	    case VT_FLOAT:
 #if defined TCC_TARGET_TRIRV
-                {   /* TF64 raw base-243（9 tryte；常量池由 gv 的浮点路径分配） */
-                    double dv = vtop->c.f; unsigned __int128 raw = tri_tf64_raw(dv); int fk;
+                {   /* TF45 raw base-243（9 tryte；常量池由 gv 的浮点路径分配） */
+                    double dv = vtop->c.f; unsigned __int128 raw = tri_tf45_raw(dv); int fk;
                     for (fk = 0; fk < 9; fk++) { ((unsigned char *)ptr)[fk] = (unsigned char)(raw % 243); raw /= 243; }
                 }
 		break;
@@ -8983,7 +8983,7 @@ static void init_putv(init_params *p, CType *type, unsigned long c)
 		break;
 	    case VT_DOUBLE:
 #if defined TCC_TARGET_TRIRV
-                {   double dv = vtop->c.d; unsigned __int128 raw = tri_tf64_raw(dv); int fk;
+                {   double dv = vtop->c.d; unsigned __int128 raw = tri_tf45_raw(dv); int fk;
                     for (fk = 0; fk < 9; fk++) { ((unsigned char *)ptr)[fk] = (unsigned char)(raw % 243); raw /= 243; } }
 		break;
 #endif
@@ -8991,7 +8991,7 @@ static void init_putv(init_params *p, CType *type, unsigned long c)
 		break;
 	    case VT_LDOUBLE:
 #if defined TCC_TARGET_TRIRV
-                {   double dv = (double)vtop->c.ld; unsigned __int128 raw = tri_tf64_raw(dv); int fk;
+                {   double dv = (double)vtop->c.ld; unsigned __int128 raw = tri_tf45_raw(dv); int fk;
                     for (fk = 0; fk < 9; fk++) { ((unsigned char *)ptr)[fk] = (unsigned char)(raw % 243); raw /= 243; } }
 		break;
 #endif
