@@ -1,5 +1,5 @@
 /* tri-isa.h —— 由 trirv_isa.py 自动生成（单一真相源，勿手改）。
- * 生成脚本: gen_tri_isa_h.py（trirv 仓库）；字段权重按 3^lo 三进制加权。 */
+ * 生成脚本: gen_tri_isa_h.py（trirv 仓库）--check 模式作 T-1.8 一致性守卫；字段权重按 3^lo 三进制加权。 */
 #ifndef TRI_ISA_H
 #define TRI_ISA_H
 
