@@ -2530,8 +2530,9 @@ static void gen_opic(int op)
     }
 }
 
-#if defined TCC_TARGET_X86_64 || defined TCC_TARGET_I386 || defined TCC_TARGET_ARM64
-# define gen_negf gen_opf
+#if defined TCC_TARGET_X86_64 || defined TCC_TARGET_I386 || defined TCC_TARGET_ARM64 \
+    || defined TCC_TARGET_TRIRV
+# define gen_negf gen_opf      /* TriRV：TOK_NEG = 0-x（FSUB），禁 IEEE 位翻转 */
 #elif defined TCC_TARGET_ARM
 void gen_negf(int op)
 {
@@ -3623,7 +3624,9 @@ ST_FUNC int type_size(CType *type, int *a)
     } else if (bt == VT_INT || bt == VT_FLOAT) {
 #ifdef TCC_TARGET_TRIRV
         if (bt == VT_INT) { *a = 1; return 9; }   /* TriRV int = 45 trit = 9 tryte */
-        *a = 1; return 4;                          /* float = TF32 = 4 tryte */
+        *a = 1; return 9;                          /* float 统一 TF64 档 = 9 tryte
+                                                      （FLW/FSW 搬 45-trit raw，
+                                                      TF32 档位留待后续） */
 #endif
         *a = 4;
         return 4;
@@ -8900,12 +8903,29 @@ static void init_putv(init_params *p, CType *type, unsigned long c)
 #endif
 		break;
 	    case VT_FLOAT:
+#if defined TCC_TARGET_TRIRV
+                {   /* TF64 raw base-243（9 tryte；常量池由 gv 的浮点路径分配） */
+                    double dv = vtop->c.f; unsigned __int128 raw = tri_tf64_raw(dv); int fk;
+                    for (fk = 0; fk < 9; fk++) { ((unsigned char *)ptr)[fk] = (unsigned char)(raw % 243); raw /= 243; }
+                }
+		break;
+#endif
                 write32le(ptr, val);
 		break;
 	    case VT_DOUBLE:
+#if defined TCC_TARGET_TRIRV
+                {   double dv = vtop->c.d; unsigned __int128 raw = tri_tf64_raw(dv); int fk;
+                    for (fk = 0; fk < 9; fk++) { ((unsigned char *)ptr)[fk] = (unsigned char)(raw % 243); raw /= 243; } }
+		break;
+#endif
                 write64le(ptr, val);
 		break;
 	    case VT_LDOUBLE:
+#if defined TCC_TARGET_TRIRV
+                {   double dv = (double)vtop->c.ld; unsigned __int128 raw = tri_tf64_raw(dv); int fk;
+                    for (fk = 0; fk < 9; fk++) { ((unsigned char *)ptr)[fk] = (unsigned char)(raw % 243); raw /= 243; } }
+		break;
+#endif
                 write_ldouble(ptr, &vtop->c.ld);
 		break;
 

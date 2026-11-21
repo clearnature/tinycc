@@ -80,7 +80,13 @@ static int is_ireg(int r)
 {
     return (unsigned)r < 8 || r == TREG_RA || r == TREG_SP;
 }
-static int freg(int r) { tcc_error("TriRV spike: no float regs"); return 0; }
+/* 浮点寄存器：tcc 浮点槽 r8-15 → freg 索引 0-7（fa0-fa7，独立 freg 堆，
+ * 与整数 x0-x31 分离——TriRV F 扩展在两套 VM 各有 freg[32]） */
+static int freg(int r)
+{
+    assert(r >= 8 && r < 16);
+    return r - 8;
+}
 static int is_freg(int r) { return r >= 8 && r < 16; }
 
 /* ---- 指令直发（20-trit 编码进 u32） ---- */
@@ -140,6 +146,7 @@ ST_FUNC void tri_add_patch(int kind, int text_off, Sym *sym, int addend, unsigne
 }
 
 static int tri_const_fits(int64_t v);
+ST_FUNC void tri_add_patch_idx(int kind, int text_off, int elf_idx, int addend, unsigned rd);
 /* 全局/静态/函数地址：双槽 LUI(hi13) + ADDI(lo7) 占位，writer 按
  * addr = hi*3^7 + lo（平衡分段，带借位）回填。VM 内存 1<<20 < 3^21，
  * hi ≤ 479 ✓。绝对 tryte 地址必须经此拆分——LUI 语义 = imm×3^7，
@@ -149,6 +156,14 @@ static void tri_lui_load(unsigned rr, Sym *sym, int addend)
     o(TRI_ENC_U(TRI_OP_LUI, 0, rr));
     o(TRI_ENC_I(TRI_OP_OPIMM, 0, rr, 0, rr));      /* ADDI rr,rr,0 占位 */
     tri_add_patch(TRI_R_LUI_ABS, ind - 8, sym, addend, rr);
+}
+
+/* 绝对地址装载（编译期已建 elf 条目：rodata 浮点常量池） */
+static void tri_lui_load_idx(unsigned rr, int elf_idx, int addend)
+{
+    o(TRI_ENC_U(TRI_OP_LUI, 0, rr));
+    o(TRI_ENC_I(TRI_OP_OPIMM, 0, rr, 0, rr));
+    tri_add_patch_idx(TRI_R_LUI_ABS, ind - 8, elf_idx, addend, rr);
 }
 
 /* ---- 跳转与补丁链 ---- */
@@ -253,6 +268,19 @@ static void tri_check_off(int fc)
 {
     if (fc < -TRI_IMM7_MAX || fc > TRI_IMM7_MAX)
       tcc_error("TriRV spike: mem offset %d too large", fc);
+}
+
+/* 无 Sym 的补丁（rodata 常量池等编译期已建 elf 条目的场合） */
+ST_FUNC void tri_add_patch_idx(int kind, int text_off, int elf_idx, int addend, unsigned rd)
+{
+    if (!(NTP & 15)) TRI_PATCHES = tcc_realloc(TRI_PATCHES, (NTP + 16) * sizeof *TRI_PATCHES);
+    TRI_PATCHES[NTP].text_off = text_off;
+    TRI_PATCHES[NTP].kind = kind;
+    TRI_PATCHES[NTP].elf_idx = elf_idx;
+    TRI_PATCHES[NTP].name = NULL;
+    TRI_PATCHES[NTP].addend = addend;
+    TRI_PATCHES[NTP].rd = rd;
+    NTP++;
 }
 
 static int tri_const_fits(int64_t v) { return v >= -TRI_IMM7_MAX && v <= TRI_IMM7_MAX; }
@@ -441,6 +469,122 @@ static int tri_mem_funct(int size, int *ok)
     }
 }
 
+/* ---- TF64 编码（对齐 trirv_float.py TF64.encode：exp_trits=10, mant_trits=34,
+ * bias=29524）---- raw = s·3^44 + E·3^34 + M，v = ±(M/3^33)×3^(E-29524)。
+ * 整数精确（__int128），支持 exp3 ∈ [-14, 47]（|v| ∈ [2.1e-7, 4.3e7]）；
+ * 域外诚实报错（bignum 编码器留待后续，musl 极端常量经 Python 管线）。 ---- */
+#define TRI_TF_P_MANT   ((__int128)3486784401LL * 4782969LL)      /* 3^34 */
+#define TRI_TF_P_SIGN   (TRI_TF_P_MANT * 59049)                    /* 3^44 */
+#define TRI_TF_MAX_EXP  59048L
+#define TRI_TF_BIAS     29524L
+
+/* 比较 lhs×2^e2 与 rhs（rhs > 0，均为 __int128 域内）→ -1/0/1（精确，
+ * 除法用商+余数：lhs×2^e2 = q + rem/2^k，q > rhs 必大、q < rhs 必小、
+ * q == rhs 时看 rem） */
+static int tri_cmp_pow2(__int128 lhs, int e2, __int128 rhs)
+{
+    if (e2 >= 0) {
+        __int128 l2 = lhs << e2;
+        return l2 < rhs ? -1 : (l2 > rhs ? 1 : 0);
+    }
+    {
+        int k = -e2;
+        __int128 q, rem;
+        if (k >= 127) { q = 0; rem = lhs; }
+        else {
+            q = lhs >> k;
+            rem = lhs & (((( __int128)1) << k) - 1);
+        }
+        if (q < rhs) return -1;
+        if (q > rhs) return 1;
+        return rem == 0 ? 0 : 1;
+    }
+}
+
+/* 比较 mi×2^e2 与 3^e（mi ∈ [2^52,2^53)，|e| ≤ 48）→ -1/0/1（精确）。
+ * 坑实录：旧版对 e<0 的 rhs 恒为 1（for i<e 不执行）——修正环
+ * while(cmp3(e+1)>=0) e++ 永真 → 编译器死循环（float域 0.5 探针暴露）。 */
+static int tri_cmp3(unsigned long long mi, int e2, long e)
+{
+    __int128 lhs = mi;
+    if (e < 0) {
+        /* a vs 3^e ⟺ (mi×2^e2)×3^(-e) vs 1（|e| ≤ 48 → mi×3^48 ≤ 2.2e38 ✓） */
+        long i;
+        for (i = 0; i < -e; i++) lhs *= 3;
+        if (e2 >= 0) return 1;                    /* ≥ 2^52 > 1 */
+        return tri_cmp_pow2(lhs, e2, 1);          /* lhs×2^e2 vs 1 */
+    }
+    {
+        __int128 rhs = 1;
+        long i;
+        for (i = 0; i < e; i++) rhs *= 3;
+        return tri_cmp_pow2(lhs, e2, rhs);
+    }
+}
+
+ST_FUNC unsigned __int128 tri_tf64_raw(double v)
+{
+    if (isnan(v)) return (__int128)TRI_TF_MAX_EXP * TRI_TF_P_MANT + 1;
+    if (isinf(v))
+      return (v < 0 ? TRI_TF_P_SIGN : 0) + (__int128)TRI_TF_MAX_EXP * TRI_TF_P_MANT;
+    if (v == 0.0)
+      return signbit(v) ? TRI_TF_P_SIGN : 0;
+    {
+        int s = v < 0;
+        double a = fabs(v);
+        int e2;
+        double mm = frexp(a, &e2);
+        unsigned long long mi = (unsigned long long)ldexp(mm, 53);  /* 精确整数 */
+        long e, shift, i;
+        __int128 M, E, num, den;
+        e2 -= 53;                        /* a = mi × 2^e2（精确分解） */
+        e = (long)((52.0 + e2) / 1.5849625007211563);   /* log2(3) 估计 */
+        if (e < -60 || e > 60)
+          tcc_error("TriRV: float constant %.17g outside exact encode range", v);
+        {   /* 修正环（±保险：估计误差应 ≤2，超限即错不悬挂） */
+            int guard = 0;
+            while (tri_cmp3(mi, e2, e) < 0) {
+                if (++guard > 8) tcc_error("TriRV: float encode e-underflow (%.17g)", v);
+                e--;
+            }
+            guard = 0;
+            while (tri_cmp3(mi, e2, e + 1) >= 0) {
+                if (++guard > 8) tcc_error("TriRV: float encode e-overflow (%.17g)", v);
+                e++;
+            }
+        }
+        if (e < -14 || e > 47)
+          tcc_error("TriRV: float constant %.17g beyond __int128 encode window "
+                    "(|exp3| <= 47, |v| in [2.1e-7, 4.3e7])", v);
+        /* M = round-half-up(mi × 3^(33-e) / 2^(-e2))，落 [3^33, 3^34) */
+        shift = 33 - e;
+        num = mi;
+        den = 1;
+        if (shift >= 0) { for (i = 0; i < shift; i++) num *= 3; }
+        else            { for (i = 0; i < -shift; i++) den *= 3; }
+        if (e2 >= 0) num <<= e2;
+        else         den <<= -e2;
+        M = (2 * num + den) / (2 * den);
+        E = e + TRI_TF_BIAS;
+        if (M >= TRI_TF_P_MANT) { M /= 3; E += 1; }
+        if (E >= TRI_TF_MAX_EXP)
+          return (s ? TRI_TF_P_SIGN : 0) + (__int128)TRI_TF_MAX_EXP * TRI_TF_P_MANT;
+        if (E <= 0) return s ? TRI_TF_P_SIGN : 0;
+        return (s ? TRI_TF_P_SIGN : 0) + E * TRI_TF_P_MANT + M;
+    }
+}
+
+/* 浮点常量 → rodata 9 tryte（base-243），返回 elf 符号索引（LUI 补丁用） */
+static int tri_tf64_rodata(double v)
+{
+    unsigned __int128 raw = tri_tf64_raw(v);
+    int roff = rodata_section->data_offset;
+    unsigned char *p = section_ptr_add(rodata_section, 9);
+    int k;
+    for (k = 0; k < 9; k++) { p[k] = (unsigned char)(raw % 243); raw /= 243; }
+    return put_elf_sym(symtab_section, roff, 9, 0, 0, rodata_section->sh_num, NULL);
+}
+
 ST_FUNC void load(int r, SValue *sv)
 {
     int fr = sv->r, v = fr & VT_VALMASK;
@@ -452,8 +596,30 @@ ST_FUNC void load(int r, SValue *sv)
     int bt = sv->type.t & VT_BTYPE;
     int align, size = type_size(&sv->type, &align);
 
-    if (bt == VT_FLOAT || bt == VT_DOUBLE || bt == VT_LDOUBLE)
-      tcc_error("TriRV spike: no float load");
+    if (bt == VT_FLOAT || bt == VT_DOUBLE || bt == VT_LDOUBLE) {
+        /* F 扩展（TF64）：LVAL → FLW fd,fc(base)；常量 → TF64 raw 编码进
+           rodata（9 tryte base-243）后 LUI t0 + FLW（TriRV 无 FMOV-imm，
+           上游 riscv64 同款常量池形态）。FLW/FSW 搬 raw 与档位无关。 */
+        if (fr & VT_LVAL) {
+            base = tri_addr_base(sv, 0, &fc);
+            tri_check_off(fc);
+            o(TRI_ENC_I(TRI_FLW_OP, fc, base, 1, rr));   /* FLW fd,fc(base) */
+            return;
+        }
+        if (v == VT_CONST) {
+            double d;
+            int idx;
+            if (bt == VT_FLOAT) d = sv->c.f;
+            else if (bt == VT_DOUBLE) d = sv->c.d;
+            else d = (double)sv->c.ld;
+            idx = tri_tf64_rodata(d);
+            tri_lui_load_idx(TRI_T0, idx, 0);
+            o(TRI_ENC_I(TRI_FLW_OP, 0, TRI_T0, 1, rr));  /* FLW fd,0(t0) */
+            return;
+        }
+        tcc_error("TriRV: float load class %d", v);
+        return;
+    }
 
     if (fr & VT_LVAL) {
         if (bt == VT_PTR || bt == VT_FUNC)
@@ -568,8 +734,12 @@ ST_FUNC void store(int r, SValue *sv)
     int bt = sv->type.t & VT_BTYPE;
     int align, size = type_size(&sv->type, &align);
 
-    if (bt == VT_FLOAT || bt == VT_DOUBLE || bt == VT_LDOUBLE)
-      tcc_error("TriRV spike: no float store");
+    if (bt == VT_FLOAT || bt == VT_DOUBLE || bt == VT_LDOUBLE) {
+        base = tri_addr_base(sv, 1, &fc);
+        tri_check_off(fc);
+        o(TRI_ENC_S(TRI_FSW_OP, fc, rr, base, 3));   /* FSW fs2,fc(base) */
+        return;
+    }
     if (bt == VT_STRUCT)
       tcc_error("TriRV spike: store(struct)");
     if (size > 9) tcc_error("TriRV spike: large store %d", size);
@@ -613,7 +783,13 @@ ST_FUNC void gfunc_prolog(Sym *func_sym)
           tcc_error("TriRV spike: stack params");
         loc -= 9;
         param_addr = loc;
-        o(TRI_ENC_S(TRI_OP_STORE, param_addr, 10 + areg, TRI_S0, 2)); /* SW aX,loc(s0) */
+        {
+            int pbt = type->t & VT_BTYPE;
+            if (pbt == VT_FLOAT || pbt == VT_DOUBLE || pbt == VT_LDOUBLE)
+              o(TRI_ENC_S(TRI_FSW_OP, param_addr, areg, TRI_S0, 3)); /* FSW faX,loc(s0) */
+            else
+              o(TRI_ENC_S(TRI_OP_STORE, param_addr, 10 + areg, TRI_S0, 2)); /* SW aX,loc(s0) */
+        }
         gfunc_set_param(sym, param_addr, 0);
         areg++;
     }
@@ -695,12 +871,20 @@ ST_FUNC void gfunc_call(int nb_args)
      * 却装进 a_{n-1-i}，实参倒装（sub(10,4)→250=y−x 探针暴露）。 */
     for (i = 0; i < nb_args; i++) {
         int ii = nb_args - 1 - i;                /* 本次装载 arg_ii */
+        int abt;
         vrotb(i + 1);
-        gv(RC_R(ii));
-        if (vtop->r != ii) {
-            /* gv 未落到目标寄存器：显式 mv */
-            TRI_ADDI(ireg(ii), ireg(vtop->r), 0);
-            vtop->r = ii;
+        abt = vtop->type.t & VT_BTYPE;           /* 须在 vrotb 后读（顶=arg_ii） */
+        if (abt == VT_FLOAT || abt == VT_DOUBLE || abt == VT_LDOUBLE) {
+            /* 浮点实参 → fa_ii（gv 经 spill/reload 落位；TriRV 无 freg-freg
+               move，寄存器不符时由 tccgen 经内存搬运） */
+            gv(RC_F(ii));
+        } else {
+            gv(RC_R(ii));
+            if (vtop->r != ii) {
+                /* gv 未落到目标寄存器：显式 mv */
+                TRI_ADDI(ireg(ii), ireg(vtop->r), 0);
+                vtop->r = ii;
+            }
         }
         vrott(i + 1);           /* 逆旋转必须与 vrotb(i+1) 配对（vrott(ii+1) 会逐轮搅乱栈） */
     }
@@ -865,11 +1049,98 @@ static void gen_opil(int op)
 ST_FUNC void gen_opi(int op) { gen_opil(op); }
 ST_FUNC void gen_opl(int op) { gen_opil(op); }
 
-/* ---- spike 不支持的路径（诚实报错） ---- */
-ST_FUNC void gen_opf(int op) { tcc_error("TriRV spike: no float ops"); }
-ST_FUNC void gen_cvt_itof(int t) { tcc_error("TriRV spike: no float"); }
-ST_FUNC void gen_cvt_ftoi(int t) { tcc_error("TriRV spike: no float"); }
-ST_FUNC void gen_cvt_ftof(int dt) { tcc_error("TriRV spike: no float"); }
+/* ---- 浮点运算（F 扩展 TF64 档；独立 freg 堆 fa0-fa7） ---- */
+ST_FUNC void gen_opf(int op)
+{
+    int a, b, d;
+    if (op == TOK_NEG) {
+        /* -x = 0 - x（TriRV 无 FNEG；FCVT.F 读整数 0 产 +0.0）。
+           记档：-(-0.0) = +0.0（IEEE 要求 -0.0）——ISA 语义边界。 */
+        int fr = freg(gv(RC_FLOAT));
+        int zd;
+        vtop--;
+        zd = get_reg(RC_FLOAT);
+        vtop++;
+        vtop->r = zd;
+        o(TRI_ENC_R(TRI_FCVT_F_OP, TRI_FCVT_F_FUNCT2, 0, 0, TRI_FCVT_F_FUNCT, zd)); /* FCVT.F zd,zero */
+        o(TRI_ENC_R(TRI_FSUB_OP, TRI_FSUB_FUNCT2, fr, zd, TRI_FSUB_FUNCT, zd));  /* zd = 0-x */
+        return;
+    }
+    /* 比较族用显式列举（坑实录：tcc token 顺序 GE=0x9d 在 LE/GT 之前——
+       区间检查 op<=TOK_GE 会把 LE/GT 排除，"bad float op 159" 暴露） */
+    switch (op) {
+    case TOK_EQ: case TOK_NE: case TOK_LT:
+    case TOK_LE: case TOK_GT: case TOK_GE: {
+        /* 浮点比较立即物化为 int 0/1（FEQ/FLT/FLE 写整数 rd；非 VT_CMP——
+           条件分支走通用 !=0 路径）。GT/GE 交换操作数（b?a 与 LE/GT 同构）。 */
+        gv2(RC_FLOAT, RC_FLOAT);
+        a = freg(vtop[-1].r);
+        b = freg(vtop[0].r);
+        vtop -= 2;
+        d = get_reg(RC_INT);
+        vtop++;
+        vtop[0].r = d;
+        d = ireg(d);
+        switch (op) {
+        case TOK_EQ: o(TRI_ENC_R(TRI_FEQ_OP, TRI_FEQ_FUNCT2, b, a, TRI_FEQ_FUNCT, d)); break;
+        case TOK_NE: o(TRI_ENC_R(TRI_FEQ_OP, TRI_FEQ_FUNCT2, b, a, TRI_FEQ_FUNCT, d));
+                     TRI_SEQZ_NOT(d); break;
+        case TOK_LT: o(TRI_ENC_R(TRI_FLT_OP, TRI_FLT_FUNCT2, b, a, TRI_FLT_FUNCT, d)); break;
+        case TOK_LE: o(TRI_ENC_R(TRI_FLE_OP, TRI_FLE_FUNCT2, b, a, TRI_FLE_FUNCT, d)); break;
+        case TOK_GT: o(TRI_ENC_R(TRI_FLT_OP, TRI_FLT_FUNCT2, a, b, TRI_FLT_FUNCT, d)); break;
+        case TOK_GE: o(TRI_ENC_R(TRI_FLE_OP, TRI_FLE_FUNCT2, a, b, TRI_FLE_FUNCT, d)); break;
+        }
+        return;
+    }
+    }
+    gv2(RC_FLOAT, RC_FLOAT);
+    a = freg(vtop[-1].r);
+    b = freg(vtop[0].r);
+    vtop -= 2;
+    d = get_reg(RC_FLOAT);
+    vtop++;
+    vtop[0].r = d;
+    d = freg(d);
+    switch (op) {
+    case '+': o(TRI_ENC_R(TRI_FADD_OP, TRI_FADD_FUNCT2, b, a, TRI_FADD_FUNCT, d)); break;
+    case '-': o(TRI_ENC_R(TRI_FSUB_OP, TRI_FSUB_FUNCT2, b, a, TRI_FSUB_FUNCT, d)); break;
+    case '*': o(TRI_ENC_R(TRI_FMUL_OP, TRI_FMUL_FUNCT2, b, a, TRI_FMUL_FUNCT, d)); break;
+    case '/': o(TRI_ENC_R(TRI_FDIV_OP, TRI_FDIV_FUNCT2, b, a, TRI_FDIV_FUNCT, d)); break;
+    default: tcc_error("TriRV: bad float op %d", op);
+    }
+}
+
+ST_FUNC void gen_cvt_itof(int t)
+{
+    int rr = ireg(gv(RC_INT));
+    int dr;
+    vtop--;
+    dr = get_reg(RC_FLOAT);
+    vtop++;
+    vtop->r = dr;
+    /* FCVT.F fd,rs1：整数（45-trit 三进制读法）→ TF64（VM round 到 mant 精度） */
+    o(TRI_ENC_R(TRI_FCVT_F_OP, TRI_FCVT_F_FUNCT2, 0, rr, TRI_FCVT_F_FUNCT, freg(dr)));
+}
+
+ST_FUNC void gen_cvt_ftoi(int t)
+{
+    int fr = freg(gv(RC_FLOAT));
+    int dr;
+    vtop--;
+    dr = get_reg(RC_INT);
+    vtop++;
+    vtop->r = dr;
+    /* FCVT.W rd,fs1：TF64 → 整数。坑记档：VM 语义是 round-to-nearest
+       （trirv_float.py FCVT.W），非 C 的向零截断——(int)3.7 → 4。
+       ISA 语义偏差，待 ISA 层拍板（FTRUNC 或软件截断）。 */
+    o(TRI_ENC_R(TRI_FCVT_W_OP, TRI_FCVT_W_FUNCT2, 0, fr, TRI_FCVT_W_FUNCT, ireg(dr)));
+}
+
+ST_FUNC void gen_cvt_ftof(int dt)
+{
+    /* float/double/long double 统一 TF64 档（type_size 均 9 tryte）——
+       TF32 档（funct2=0 算术）留待后续；C 的 float 精度损失不建模，记档。 */
+}
 ST_FUNC void gen_cvt_sxtw(void) { /* 45-trit 单宽，无 32→64 问题：no-op */ }
 ST_FUNC void gen_cvt_csti(int t) { tcc_error("TriRV spike: gen_cvt_csti"); }
 ST_FUNC void gen_increment_tcov(SValue *sv) { tcc_error("TriRV spike: tcov"); }
