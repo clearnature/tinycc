@@ -340,8 +340,16 @@ static void tri_load_imm_hw(unsigned hw, unsigned __int128 v)
         tri_load_seg_abs(hw, n);
     }
     for (si = ns - 2; si >= 0; si--) {
-        o(TRI_ENC_I(TRI_OP_OPIMM, 20, hw, 4 /* SLLI */, hw)); /* hw *= 3^20 */
         n = segs[si];
+        if (n == 0) {
+            /* 中段 0：只移位不装载不加——坑实录：曾无条件 ADD T0，而
+               tri_load_seg_abs(T0,0) 是 NOP 不清 T0——T0 的残留垃圾被加进
+               累加器（strtod 的 mag<=-14130 判断装 -14130=3^45-14130 三段
+               含中段 0 → 判断恒错 → return 0；负多段常量首暴露）。 */
+            o(TRI_ENC_I(TRI_OP_OPIMM, 20, hw, 4 /* SLLI */, hw)); /* hw *= 3^20 */
+            continue;
+        }
+        o(TRI_ENC_I(TRI_OP_OPIMM, 20, hw, 4 /* SLLI */, hw)); /* hw *= 3^20 */
         if (n < 0) {
             tri_load_seg_abs(TRI_T0, -n);
             o(TRI_ENC_R(TRI_SUB_OP, TRI_SUB_FUNCT2, TRI_T0, 0, TRI_SUB_FUNCT, TRI_T0));
