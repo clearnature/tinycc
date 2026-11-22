@@ -40,6 +40,17 @@ ST_FUNC int tri_output_file(TCCState *s1, const char *filename);
 static Section *TRI_SEC_DATA, *TRI_SEC_RODATA, *TRI_SEC_BSS, *TRI_SEC_COMMON;
 static int TRI_LAYOUT_DONE;
 
+/* 前置槽总数：_start 5 + __tri_syscall 9 = 14 槽（56 tryte）。
+ * __tri_syscall 是链接器内建的 syscall 对接面（musl arch 层 syscall_arch.h
+ * 的 TriRV 版——上游 riscv64 用内联汇编 ecall，TriRV 无内联汇编）：
+ *   n→a7(x17)，a1..a6 整体下移一档到 a0..a5，ECALL（返回值写回 a0），
+ *   JALR zero,ra,0 返回。C 侧原型：
+ *   long __tri_syscall(long n, long a0, long a1, long a2, long a3, long a4, long a5);
+ * 改槽数必须同步：sh_addr 基址 / n_inst / JAL 偏移 / 补丁 site / blob 槽位。 */
+#define TRI_START_SLOTS  14
+#define TRI_TEXT_BASE    (TRI_START_SLOTS * 4)   /* 56 */
+#define TRI_SYSCALL_SLOT 5                        /* blob 首槽（_start 之后） */
+
 static addr_t tri_get_section_base(TCCState *s1, Section *sec)
 {
     addr_t pos = 100;                 /* rodata 起点（避开零页 argc/argv） */
@@ -48,11 +59,11 @@ static addr_t tri_get_section_base(TCCState *s1, Section *sec)
         TRI_SEC_DATA   = data_section;
         TRI_SEC_BSS    = bss_section;
         TRI_SEC_COMMON = common_section;
-        /* text 基址 = 5 槽 _start 前置（20 字节）——符号终址一次到位。
-           坑实录：曾只给 rodata/data/bss/common 赋 sh_addr，text 恒 0，
+        /* text 基址 = TRI_START_SLOTS 槽前置（TRI_TEXT_BASE 字节）——符号终址
+           一次到位。坑实录：曾只给 rodata/data/bss/common 赋 sh_addr，text 恒 0，
            数据回填与 JAL 补丁各自散落 +20，TRI_R_LUI_ABS 分支漏加
            （&f 探针 exit=0，f 终址应 20）。 */
-        if (text_section) text_section->sh_addr = 20;
+        if (text_section) text_section->sh_addr = TRI_TEXT_BASE;
         if (TRI_SEC_RODATA) { TRI_SEC_RODATA->sh_addr = pos; pos += TRI_SEC_RODATA->data_offset; }
         pos = (pos + 8) / 9 * 9;
         if (TRI_SEC_DATA)   { TRI_SEC_DATA->sh_addr   = pos; pos += TRI_SEC_DATA->data_offset; }
@@ -80,6 +91,10 @@ static addr_t tri_sym_final(TCCState *s1, int symidx, int for_data)
     if (es->st_shndx == SHN_UNDEF) {
         if (ELFW(ST_BIND)(es->st_info) == STB_WEAK)
           return 0;
+        /* 链接器内建符号：__tri_syscall（TRI_SYSCALL_SLOT 前置块，见上方注释）。
+           绝对地址 = text 基址 + 首槽偏移；三槽语义 = n→a7/参数下移/ECALL。 */
+        if (!strcmp((char *)s1->symtab->data + es->st_name, "__tri_syscall"))
+          return TRI_SYSCALL_SLOT * 4;   /* 前置区绝对地址（非 text 相对）：槽 5 → 20 */
         fprintf(stderr, "TriRV: unresolved reference to '%s'%s\n",
                 (char *)s1->symtab->data + es->st_name,
                 for_data ? " (data)" : "");
@@ -106,6 +121,10 @@ static addr_t tri_patch_symbol(TCCState *s1, const char *name, int elf_idx)
     int idx = (elf_idx > 0) ? elf_idx
             : (name ? find_elf_sym(s1->symtab, name) : 0);
     if (idx <= 0) {
+        /* 链接器内建符号白名单（tri_sym_final 同款）：__tri_syscall 的
+           extern 声明可能被 symtab 剪枝（idx<=0 走到这里）——按名直解。 */
+        if (name && !strcmp(name, "__tri_syscall"))
+          return TRI_SYSCALL_SLOT * 4;   /* 前置区绝对地址（非 text 相对）：槽 5 → 20 */
         fprintf(stderr, "TriRV: unresolved reference%s%s\n",
                 name ? " to '" : "", name ? name : "");
         exit(1);
@@ -167,7 +186,7 @@ ST_FUNC int tri_output_file(TCCState *s1, const char *filename)
 {
     Section *text = text_section;
     int text_bytes = text->data_offset;
-    int n_inst = 5 + text_bytes / 4;
+    int n_inst = TRI_START_SLOTS + text_bytes / 4;
     int n_seg = 0;
     addr_t main_addr;
     uint32_t *out;
@@ -224,22 +243,32 @@ ST_FUNC int tri_output_file(TCCState *s1, const char *filename)
     /* _start 槽 0-4 */
     out[0] = TRI_ENC_I(TRI_OP_LOAD, 0, 0, 2, 10);            /* LW a0,0(zero)  argc */
     out[1] = TRI_ENC_I(TRI_OP_LOAD, 9, 0, 2, 11);            /* LW a1,9(zero)  argv */
-    out[2] = TRI_ENC_U(TRI_OP_JAL, main_addr / 4 + 3, 1); /* JAL ra,main：前置后 main 在槽 0+5 */
+    out[2] = TRI_ENC_U(TRI_OP_JAL, main_addr / 4 + TRI_START_SLOTS - 2, 1); /* JAL ra,main：前置后 main 在槽 TRI_START_SLOTS */
     out[3] = TRI_ENC_I(TRI_OP_OPIMM, 93, 0, 0, 17);          /* ADDI a7,zero,93  exit */
     out[4] = TRI_ENC_I(TRI_OP_SYSTEM, 0, 0, 0, 0);           /* ECALL */
+    /* __tri_syscall 槽 5-13（TRI_SYSCALL_SLOT 起；见文件头注释的约定） */
+    out[5]  = TRI_ENC_I(TRI_OP_OPIMM, 0, 10, 0, 17);         /* ADDI a7,a0,0   n→号 */
+    out[6]  = TRI_ENC_I(TRI_OP_OPIMM, 0, 11, 0, 10);         /* ADDI a0,a1,0   参数下移 */
+    out[7]  = TRI_ENC_I(TRI_OP_OPIMM, 0, 12, 0, 11);         /* ADDI a1,a2,0 */
+    out[8]  = TRI_ENC_I(TRI_OP_OPIMM, 0, 13, 0, 12);         /* ADDI a2,a3,0 */
+    out[9]  = TRI_ENC_I(TRI_OP_OPIMM, 0, 14, 0, 13);         /* ADDI a3,a4,0 */
+    out[10] = TRI_ENC_I(TRI_OP_OPIMM, 0, 15, 0, 14);         /* ADDI a4,a5,0 */
+    out[11] = TRI_ENC_I(TRI_OP_OPIMM, 0, 16, 0, 15);         /* ADDI a5,a6,0 */
+    out[12] = TRI_ENC_I(TRI_OP_SYSTEM, 0, 0, 0, 0);          /* ECALL */
+    out[13] = TRI_ENC_I(TRI_OP_JALR, 0, 1, 0, 0);            /* JALR zero,ra,0 */
     for (i = 0; i < text_bytes / 4; i++)
-      out[5 + i] = read32le(text->data + i * 4);
+      out[TRI_START_SLOTS + i] = read32le(text->data + i * 4);
 
     /* 补丁回填 */
     for (i = 0; i < NTP; i++) {
         struct tri_patch *p = &TRI_PATCHES[i];
-        /* 符号终址含 text 基址 20（tri_get_section_base 已赋 sh_addr） */
+        /* 符号终址含 text 基址 TRI_TEXT_BASE（tri_get_section_base 已赋 sh_addr） */
         addr_t tgt = tri_patch_symbol(s1, p->name, p->elf_idx) + p->addend;
         if (p->kind == TRI_R_JAL_SLOT) {
-            /* 补丁槽自身随 _start 前移（site 在 text 内 text_off 处） */
-            int site_slot = (p->text_off + 20) / 4;
+            /* 补丁槽自身随前置块前移（site 在 text 内 text_off 处） */
+            int site_slot = (p->text_off + TRI_TEXT_BASE) / 4;
             int delta = (int)(tgt / 4) - site_slot;
-            out[p->text_off / 4 + 5] = TRI_ENC_U(TRI_OP_JAL, delta, p->rd);
+            out[p->text_off / 4 + TRI_START_SLOTS] = TRI_ENC_U(TRI_OP_JAL, delta, p->rd);
             continue;
         }
         if (p->kind == TRI_R_LUI_ABS) {
@@ -250,8 +279,8 @@ ST_FUNC int tri_output_file(TCCState *s1, const char *filename)
             {
                 long long hi = tgt / 2187, lo = tgt % 2187;
                 if (lo > TRI_IMM7_MAX) { lo -= 2187; hi += 1; }
-                out[p->text_off / 4 + 5]     = TRI_ENC_U(TRI_OP_LUI, (unsigned)hi, p->rd);
-                out[p->text_off / 4 + 5 + 1] = TRI_ENC_I(TRI_OP_OPIMM, (int)lo, p->rd, 0, p->rd);
+                out[p->text_off / 4 + TRI_START_SLOTS]     = TRI_ENC_U(TRI_OP_LUI, (unsigned)hi, p->rd);
+                out[p->text_off / 4 + TRI_START_SLOTS + 1] = TRI_ENC_I(TRI_OP_OPIMM, (int)lo, p->rd, 0, p->rd);
             }
         }
     }

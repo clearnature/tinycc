@@ -3794,12 +3794,17 @@ error:
         }
 #endif
 #if defined TCC_TARGET_TRIRV
-        if (dbt_bt == VT_INT && ss == 8) {
-            /* TriRV：int 与 long long 同宽（9 tryte = 45 trit）——LLONG→INT
-               窄化无操作。坑实录：上游 32 位域的 <<(ss-ds)*8 / SAR / SHR
+        if (dbt_bt == VT_INT && (ss == 8 || ss == 9)) {
+            /* TriRV：int/long/long long/ptr 同宽（9 tryte = 45 trit）——
+               LLONG→INT、**PTR→LONG** 窄化均无操作（类宽只是内部记账口径，
+               btype_size(VT_LLONG)=8 / btype_size(VT_PTR)=PTR_SIZE=9 两种
+               记账都要截走）。坑实录：上游 32 位域的 <<(ss-ds)*8 / SAR / SHR
                序列在此域 = ×2^32 后回绕毁值（字面量 >2^31 触发 LLONG 提升
-               即踩：d1*10000000000000 → int prod → prod%242 全错）。char/
-               short 的 mod 窄化已被上方 gen_cvt_tri_narrow 分支截走。 */
+               即踩：d1*10000000000000 → int prod → prod%242 全错）；
+               (long)buf 指针实参走 ss=9 路径 ×3^40÷3^40 回绕毁地址
+               （__tri_syscall 对接面实证——地址高位被 mod 3^45 卷走后
+               ÷3^40 出垃圾，read8 静默 OOB 返 0）。char/short 的 mod
+               窄化已被上方 gen_cvt_tri_narrow 分支截走。 */
             goto done;
         }
 #endif
