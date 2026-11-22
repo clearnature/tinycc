@@ -278,6 +278,14 @@
                                   & -(__alignof__(type)))
     #define __builtin_va_arg(ap,type) (*(sizeof(type) > (2*__va_reg_size) ? *(type **)((ap += __va_reg_size) - __va_reg_size) : (ap = (va_list)(_tcc_align(ap,type) + (sizeof(type)+__va_reg_size - 1)& -__va_reg_size), (type *)(ap - ((sizeof(type)+ __va_reg_size - 1)& -__va_reg_size)))))
 
+#elif defined __trirv
+    /* TriRV（2026-11-22 三值本征方言）：对齐用算术取整（(n+3)/4*4，任意进制
+       安全）。原 __i386__ 回退分支的 &~3 位掩码在逐 trit TAND 语义下不再是
+       「对齐到 4」——TAND(raw,-4) ≠ 算术取整，va_arg 会静默错位。 */
+    typedef char *__builtin_va_list;
+    #define __builtin_va_start(ap,last) (ap = ((char *)&(last)) + (((sizeof(last)+3)/4)*4))
+    #define __builtin_va_arg(ap,t) (*(t*)((ap+=(((sizeof(t)+3)/4)*4))-(((sizeof(t)+3)/4)*4)))
+
 #else /* __i386__ */
     typedef char *__builtin_va_list;
     #define __builtin_va_start(ap,last) (ap = ((char *)&(last)) + ((sizeof(last)+3)&~3))

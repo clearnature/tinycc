@@ -2404,6 +2404,44 @@ static int gen_opic_lt(uint64_t a, uint64_t b)
     return (a ^ (uint64_t)1 << 63) < (b ^ (uint64_t)1 << 63);
 }
 
+#if defined TCC_TARGET_TRIRV
+/* 三值本征常量折叠辅助（2026-11-22 方言拍板，方案 A 折叠退役）：
+ * 45-trit 域逐 trit 运算，__int128 全域（3^45 ≈ 2.95e21 < 2^96）。
+ * 负 int64 常量先映回 raw（+3^45）。结果 ≥ 2^63 装不回 CValue.i，
+ * 由调用方回退 general_case（寄存器全域运行时）。 */
+#define TRI_FOLD_P45 (__int128)3486784401LL * (__int128)3486784401LL * 243
+
+static unsigned __int128 tri_fold_raw(int64_t v)
+{
+    unsigned __int128 r = (unsigned __int128)v;
+    if (v < 0) r += TRI_FOLD_P45;
+    return r;
+}
+
+static unsigned __int128 tri_pow3(int k)
+{
+    unsigned __int128 r = 1;
+    int i;
+    for (i = 0; i < k; i++) r *= 3;
+    return r;
+}
+
+static unsigned __int128 tri_fold_tritwise(unsigned __int128 a, unsigned __int128 b, int op)
+{
+    unsigned __int128 r = 0, p = 1;
+    int i;
+    for (i = 0; i < 45; i++) {
+        unsigned __int128 ta = a % 3, tb = b % 3, t;
+        a /= 3; b /= 3;
+        if (op == 0) t = ta < tb ? ta : tb;        /* & = TAND 逐 trit min */
+        else if (op == 1) t = ta > tb ? ta : tb;   /* | = TOR 逐 trit max */
+        else t = (ta + tb) % 3;                    /* ^ = XOR 逐 trit mod-3 */
+        r += t * p; p *= 3;
+    }
+    return r;
+}
+#endif
+
 /* handle integer constant optimizations and various machine
    independent opt */
 static void gen_opic(int op)
@@ -2416,16 +2454,35 @@ static void gen_opic(int op)
     int c2 = (v2->r & (VT_VALMASK | VT_LVAL | VT_SYM)) == VT_CONST;
     uint64_t l1 = c1 ? value64(v1->c.i, v1->type.t) : 0;
     uint64_t l2 = c2 ? value64(v2->c.i, v2->type.t) : 0;
-    int shm = (t1 == VT_LLONG) ? 63 : 31;
+#if !defined TCC_TARGET_TRIRV
+    int shm = (t1 == VT_LLONG) ? 63 : 31;   /* 上游二进制折叠的 32/64 移位掩码；本征移位无此口径 */
+#endif
     int r;
 
     if (c1 && c2) {
         switch(op) {
         case '+': l1 += l2; break;
         case '-': l1 -= l2; break;
+#if defined TCC_TARGET_TRIRV
+        /* 三值本征：逐 trit TAND/TOR/XOR（raw 域全域折叠）。结果 ≥ 2^63
+           装不回常量槽 → 回退运行时（后端寄存器全域单指令）。注意本征
+           XOR 不自反：a^a = 逐 trit 2a mod 3 ≠ 0。 */
+        case '&': case '^': case '|':
+            {
+                unsigned __int128 rr =
+                    tri_fold_tritwise(tri_fold_raw((int64_t)l1),
+                                      tri_fold_raw((int64_t)l2),
+                                      op == '&' ? 0 : op == '|' ? 1 : 2);
+                if (rr >= (unsigned __int128)1 << 63)
+                    goto general_case;
+                l1 = (uint64_t)rr;
+            }
+            break;
+#else
         case '&': l1 &= l2; break;
         case '^': l1 ^= l2; break;
         case '|': l1 |= l2; break;
+#endif
         case '*': l1 *= l2; break;
 
         case TOK_PDIV:
@@ -2446,11 +2503,34 @@ static void gen_opic(int op)
             case TOK_UMOD: l1 = l1 % l2; break;
             }
             break;
+#if defined TCC_TARGET_TRIRV
+        /* 三值本征移位：<< = ×3^k mod 3^45，>> 无符号 = raw ÷3^k，>> 有符号
+           = ÷3^k 向零截断（≡ 除法口径，后端 SRAI 同语义）。k ≤ 44 折叠；
+           k ≥ 45 回退后端（k∈[45,4096] 发 0/符号，>4096 编译期报错）。 */
+        case TOK_SHL:
+            if (l2 > 44) goto general_case;
+            {
+                unsigned __int128 rr = tri_fold_raw((int64_t)l1) * tri_pow3((int)l2);
+                rr %= TRI_FOLD_P45;
+                if (rr >= (unsigned __int128)1 << 63) goto general_case;
+                l1 = (uint64_t)rr;
+            }
+            break;
+        case TOK_SHR:
+            if (l2 > 44) goto general_case;
+            l1 = (uint64_t)(tri_fold_raw((int64_t)l1) / tri_pow3((int)l2));
+            break;
+        case TOK_SAR:
+            if (l2 > 44) goto general_case;
+            l1 = (uint64_t)((int64_t)l1 / (int64_t)tri_pow3((int)l2));  /* C / 向零截断 = SRA 口径 */
+            break;
+#else
         case TOK_SHL: l1 <<= (l2 & shm); break;
         case TOK_SHR: l1 >>= (l2 & shm); break;
         case TOK_SAR:
             l1 = (l1 >> 63) ? ~(~l1 >> (l2 & shm)) : l1 >> (l2 & shm);
             break;
+#endif
             /* tests */
         case TOK_ULT: l1 = l1 < l2; break;
         case TOK_UGE: l1 = l1 >= l2; break;
@@ -2479,14 +2559,23 @@ static void gen_opic(int op)
             c2 = c1; //c = c1, c1 = c2, c2 = c;
             l2 = l1; //l = l1, l1 = l2, l2 = l;
         }
-        if (c1 && ((l1 == 0 &&
-                    (op == TOK_SHL || op == TOK_SHR || op == TOK_SAR)) ||
-                   (l1 == -1 && op == TOK_SAR))) {
+        if (c1 && (l1 == 0 &&
+                   (op == TOK_SHL || op == TOK_SHR || op == TOK_SAR)
+#if !defined TCC_TARGET_TRIRV
+                   /* 本征 SRA 向零截断：-1 >> x = 0 非 -1，此恒等式失效 */
+                   || (l1 == -1 && op == TOK_SAR)
+#endif
+                   )) {
             /* treat (0 << x), (0 >> x) and (-1 >> x) as constant */
             vpop();
         } else if (c2 && ((l2 == 0 && (op == '&' || op == '*')) ||
                           (op == '|' &&
-                            (l2 == -1 || (l2 == 0xFFFFFFFF && t2 != VT_LLONG))) ||
+                            (l2 == -1
+#if !defined TCC_TARGET_TRIRV
+                             /* 本征域 raw 0xFFFFFFFF 是普通正数非全 trit 2 */
+                             || (l2 == 0xFFFFFFFF && t2 != VT_LLONG)
+#endif
+                            )) ||
                           (l2 == 1 && (op == '%' || op == TOK_UMOD)))) {
             /* treat (x & 0), (x * 0), (x | -1) and (x % 1) as constant */
             if (l2 == 1)
@@ -2500,11 +2589,20 @@ static void gen_opic(int op)
                             op == TOK_SHL || op == TOK_SHR || op == TOK_SAR) &&
                            l2 == 0) ||
                           (op == '&' &&
-                            (l2 == -1 || (l2 == 0xFFFFFFFF && t2 != VT_LLONG))))) {
-            /* filter out NOP operations like x*1, x-0, x&-1... */
+                            (l2 == -1
+#if !defined TCC_TARGET_TRIRV
+                             || (l2 == 0xFFFFFFFF && t2 != VT_LLONG)
+#endif
+                            )))) {
+            /* filter out NOP operations like x*1, x-0, x&-1...
+               （本征域有效性已核：TAND 全 trit 2 = min(t,2)=t ✓、TOR/XOR 零元 ✓、
+               0xFFFFFFFF 变体 ✗ 已守卫排除） */
             vtop--;
         } else if (c2 && (op == '*' || op == TOK_PDIV || op == TOK_UDIV || op == TOK_UMOD)) {
-            /* try to use shifts instead of muls or divs */
+#if !defined TCC_TARGET_TRIRV
+            /* try to use shifts instead of muls or divs
+               （×2^n→<<、÷2^n→>>、%2^n→& 是二进制恒等式，本征域 ×3^n/÷3^n
+               语义不同——TRIRV 保持 MUL/DIV/REMU 原样，勿强度削减） */
             if (l2 > 0 && (l2 & (l2 - 1)) == 0) {
                 int n = -1;
                 if (op == TOK_UMOD) {
@@ -2524,6 +2622,7 @@ static void gen_opic(int op)
                 else
                     op = TOK_SHR;
             }
+#endif
             goto general_case;
         } else if (c2 && (op == '+' || op == '-') &&
                    (r = vtop[-1].r & (VT_VALMASK | VT_LVAL | VT_SYM),
@@ -6519,11 +6618,20 @@ ST_FUNC void unary(void)
         next();
         unary();
 #ifdef TCC_TARGET_TRIRV
-        /* __tint：一元非 = TNOT 直发（Kleene：0<->2、1->1）。
-           不走 vpushi(-1) ^ x —— ^ 对 __tint 是门控非法运算。 */
-        if (vtop->type.t & VT_TINT) {
-            gen_tnot();
-            break;
+        /* 三值本征（2026-11-22 方言拍板）：一元非 = TNOT 直发（0<->2、1->1，
+           ~0 = -1），覆盖全部整型（int/long long/short/char 及 __tint）。
+           TNOT ≡ -1-x（全字精确），常量直接折叠；方案 A 的 vpushi(-1)^x
+           二进制折叠退役。 */
+        {
+            int tbt = vtop->type.t & VT_BTYPE;
+            if ((vtop->type.t & VT_TINT) || tbt == VT_INT || tbt == VT_LLONG
+                || tbt == VT_SHORT || tbt == VT_BYTE) {
+                if ((vtop->r & (VT_VALMASK | VT_LVAL | VT_SYM)) == VT_CONST)
+                    vtop->c.i = (uint64_t)(-1 - (int64_t)vtop->c.i);
+                else
+                    gen_tnot();
+                break;
+            }
         }
 #endif
         vpushi(-1);
