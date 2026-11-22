@@ -3664,6 +3664,16 @@ error:
             goto done;
         }
 #endif
+#if defined TCC_TARGET_TRIRV
+        if (dbt_bt == VT_INT && ss == 8) {
+            /* TriRV：int 与 long long 同宽（9 tryte = 45 trit）——LLONG→INT
+               窄化无操作。坑实录：上游 32 位域的 <<(ss-ds)*8 / SAR / SHR
+               序列在此域 = ×2^32 后回绕毁值（字面量 >2^31 触发 LLONG 提升
+               即踩：d1*10000000000000 → int prod → prod%242 全错）。char/
+               short 的 mod 窄化已被上方 gen_cvt_tri_narrow 分支截走。 */
+            goto done;
+        }
+#endif
         bits = (ss - ds) * 8;
         /* for unsigned, gen_op will convert SAR to SHR */
         vtop->type.t = (ss == 8 ? VT_LLONG : VT_INT) | (dbt & VT_UNSIGNED);
