@@ -55,6 +55,9 @@
      DEF(TOK_COMPLEX, "_Complex")
      DEF(TOK_SHORT, "short")
      DEF(TOK_LONG, "long")
+#ifdef TCC_TARGET_TRIRV
+     DEF(TOK_TINT, "__tint")
+#endif
      DEF(TOK_STRUCT, "struct")
      DEF(TOK_UNION, "union")
      DEF(TOK_TYPEDEF, "typedef")

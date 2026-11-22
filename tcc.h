@@ -1078,6 +1078,10 @@ struct filespec {
 #define VT_DOUBLE           9  /* IEEE double */
 #define VT_LDOUBLE         10  /* IEEE long double */
 #define VT_BOOL            11  /* ISOC99 boolean type */
+#define VT_TINT       0x00040000  /* TriRV: modifier with VT_INT — __tint ternary-logic word
+                                          (only meaningful under TCC_TARGET_TRIRV; upstream
+                                          BTYPE slots are full, so this follows the VT_LONG
+                                          modifier pattern like long = VT_INT|VT_LONG) */
 #define VT_QLONG           13  /* 128-bit integer. Only used for x86-64 ABI */
 #define VT_QFLOAT          14  /* 128-bit float. Only used for x86-64 ABI */
 
@@ -1772,7 +1776,9 @@ ST_FUNC void gen_clear_cache(void);
 #ifdef TCC_TARGET_TRIRV
 ST_FUNC int tri_output_file(TCCState *s1, const char *filename);
 ST_FUNC unsigned __int128 tri_tf45_raw(double v);   /* TF45 编码（init_putv 常量池用） */
-ST_FUNC void gen_cvt_tri_narrow(int bt, int uns);   /* R 值窄化 mod-243/59049（gen_cast 用） */
+ST_FUNC void gen_cvt_tri_narrow(int bt, int uns);
+ST_FUNC void gen_opit(int op);                      /* __tint 二元运算分派 */
+ST_FUNC void gen_tnot(void);                        /* __tint 一元非 */   /* R 值窄化 mod-243/59049（gen_cast 用） */
 ST_FUNC void gen_opl(int op);
 ST_FUNC void gen_va_start(void);
 ST_FUNC void arch_transfer_ret_regs(int);

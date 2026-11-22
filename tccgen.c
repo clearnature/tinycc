@@ -2756,7 +2756,7 @@ static void type_to_str(char *buf, int buf_size,
         tstr = "short";
         goto add_tstr;
     case VT_INT:
-        tstr = "int";
+        tstr = (t & VT_TINT) ? "__tint" : "int";
         goto maybe_long;
     case VT_LLONG:
         tstr = "long long";
@@ -3115,6 +3115,9 @@ ST_FUNC void gen_op(int op)
     int t1, t2, bt1, bt2, t;
     CType type1, combtype;
     int op_class = op;
+#ifdef TCC_TARGET_TRIRV
+    int is_tint_op = 0; /* __tint 分派标志（std_op 内计算，须在 gen_cast_s 前） */
+#endif
 
     if (op == TOK_SHR || op == TOK_SAR || op == TOK_SHL)
         op_class = SHIFT_OP;
@@ -3206,6 +3209,22 @@ op_err:
         }
     std_op:
         t = t2 = combtype.t;
+#ifdef TCC_TARGET_TRIRV
+        /* __tint：进制混用检查 + 分派标志。
+           标志必须在 gen_cast_s 之前计算——cast 会把操作数类型归一到
+           combine 结果（剥掉 VT_TINT 修饰位）；尾部结果类型恢复同用。 */
+        if ((vtop[-1].type.t & VT_TINT) != (vtop[0].type.t & VT_TINT)) {
+            /* 豁免：if(x)/!x 语境合成的 x != 0 / x == 0——0 是 TINT
+               中性零（全 trit 0），位语义一致，不是进制混用 */
+            int zero_side = (vtop[0].r == VT_CONST
+                             && (int64_t)vtop[0].c.i == 0);
+            if (!((op == TOK_NE || op == TOK_EQ) && zero_side))
+              tcc_error("TriRV: implicit mixing of int and __tint is not allowed (use explicit cast)");
+        }
+        is_tint_op = ((t & VT_BTYPE) == VT_INT
+                      && (vtop[-1].type.t & VT_TINT)
+                      && (vtop[0].type.t & VT_TINT));
+#endif
         /* special case for shifts and long long: we keep the shift as
            an integer */
         if (op_class == SHIFT_OP)
@@ -3234,13 +3253,23 @@ op_err:
         gen_cast_s(t2);
         if (is_float(t))
             gen_opif(op);
+#ifdef TCC_TARGET_TRIRV
+        else if (is_tint_op)
+            gen_opit(op); /* __tint：& | 直发 TT 门，== != 位型全等，其余门控 */
+#endif
         else
             gen_opic(op);
         if (op_class == CMP_OP) {
             /* relational op: the result is an int */
             vtop->type.t = VT_INT;
         } else {
+#ifdef TCC_TARGET_TRIRV
+            /* __tint：combine 剥修饰位——结果恢复 VT_TINT（链式运算的
+               ~ 拦截依赖此位；gen_opit 已直发 TT 门） */
+            vtop->type.t = t | (is_tint_op ? VT_TINT : 0);
+#else
             vtop->type.t = t;
+#endif
             bitint_narrow(); /* the result may exceed the width */
         }
     }
@@ -5165,6 +5194,11 @@ static int parse_btype(CType *type, AttributeDef *ad, int ignore_label)
         case TOK_SHORT:
             u = VT_SHORT;
             goto basic_type;
+#ifdef TCC_TARGET_TRIRV
+        case TOK_TINT:
+            u = VT_INT | VT_TINT; /* long 模式同构：修饰位随 VT_INT 进 bt 槽 */
+            goto basic_type;
+#endif
         case TOK_INT:
             u = VT_INT;
             goto basic_type;
@@ -6474,6 +6508,14 @@ ST_FUNC void unary(void)
     case '~':
         next();
         unary();
+#ifdef TCC_TARGET_TRIRV
+        /* __tint：一元非 = TNOT 直发（Kleene：0<->2、1->1）。
+           不走 vpushi(-1) ^ x —— ^ 对 __tint 是门控非法运算。 */
+        if (vtop->type.t & VT_TINT) {
+            gen_tnot();
+            break;
+        }
+#endif
         vpushi(-1);
         gen_op('^');
         break;

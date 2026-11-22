@@ -1012,6 +1012,58 @@ static void gen_opil(int op)
 ST_FUNC void gen_opi(int op) { gen_opil(op); }
 ST_FUNC void gen_opl(int op) { gen_opil(op); }
 
+/* ---- __tint 三值逻辑（Kleene 系统；批次 C1） ----
+   语义锚：TAND=min（假优先）、TOR=max（真优先）、TNOT=2-x（0<->2、1->1）。
+   == != 走整数路径（位型全等：SUB + SEQZ/SNEZ）；^ / 序比较 / 算术
+   全部门控报错——__tint 不是 int 的别名，是独立代数系统。 */
+ST_FUNC void gen_opit(int op)
+{
+    if (op == '&' || op == '|') {
+        int a, b, d;
+        gv2(RC_INT, RC_INT);
+        a = ireg(vtop[-1].r);
+        b = ireg(vtop[0].r);
+        vtop -= 2;
+        d = get_reg(RC_INT);
+        vtop++;
+        vtop[0].r = d;
+        /* R 型编码走 tri-isa.h 生成宏（TRI_ENC_R 第 3 参 rs2 第 4 参 rs1） */
+        if (op == '&')
+          o(TRI_ENC_R(TRI_TAND_OP, TRI_TAND_FUNCT2, b, a, TRI_TAND_FUNCT, ireg(d)));
+        else
+          o(TRI_ENC_R(TRI_TOR_OP, TRI_TOR_FUNCT2, b, a, TRI_TOR_FUNCT, ireg(d)));
+        vtop[0].type.t |= VT_TINT;
+        return;
+    }
+    if (op == TOK_EQ || op == TOK_NE) {
+        gen_opil(op); /* 位型全等：整数路径复用（结果 int 0/1，CMP_OP 已定） */
+        return;
+    }
+    if (op == '^')
+      tcc_error("TriRV: __tint has no '^' (Kleene system; use ~ for not)");
+    /* 序比较门控：显式 switch（记档坑——比较族 token 不连续，
+       TOK_ULT..TOK_GT 区间还涵盖 EQ/NE/Nset/Nclear，禁区间检查） */
+    switch (op) {
+    case TOK_ULT: case TOK_UGE: case TOK_ULE: case TOK_UGT:
+    case TOK_LT:  case TOK_GE:  case TOK_LE:  case TOK_GT:
+      tcc_error("TriRV: __tint has no ordering ('<' etc: ternary values are unordered)");
+    default: break;
+    }
+    tcc_error("TriRV: __tint has no arithmetic ops (+ - * / % << >>)");
+}
+
+ST_FUNC void gen_tnot(void)
+{
+    int a, d;
+    gv(RC_INT);
+    a = ireg(vtop[0].r);
+    vtop--;
+    d = get_reg(RC_INT);
+    vtop++;
+    vtop[0].r = d;
+    o(TRI_ENC_R(TRI_TNOT_OP, TRI_TNOT_FUNCT2, 0, a, TRI_TNOT_FUNCT, ireg(d)));
+}
+
 /* ---- 浮点运算（F 扩展 TF45 档；独立 freg 堆 fa0-fa7） ---- */
 ST_FUNC void gen_opf(int op)
 {
