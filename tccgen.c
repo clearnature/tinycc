@@ -2849,7 +2849,7 @@ static void type_to_str(char *buf, int buf_size,
         tstr = "_Bool";
         goto add_tstr;
     case VT_BYTE:
-        tstr = "char";
+        tstr = (t & VT_TINT) ? "__tbool" : "char";
         goto add_tstr;
     case VT_SHORT:
         tstr = "short";
@@ -3320,7 +3320,7 @@ op_err:
             if (!((op == TOK_NE || op == TOK_EQ) && zero_side))
               tcc_error("TriRV: implicit mixing of int and __tint is not allowed (use explicit cast)");
         }
-        is_tint_op = ((t & VT_BTYPE) == VT_INT
+        is_tint_op = (((t & VT_BTYPE) == VT_INT || (t & VT_BTYPE) == VT_BYTE)
                       && (vtop[-1].type.t & VT_TINT)
                       && (vtop[0].type.t & VT_TINT));
 #endif
@@ -5350,6 +5350,13 @@ static int parse_btype(CType *type, AttributeDef *ad, int ignore_label)
             goto basic_type;
         case TOK_TINT2:
             u = VT_INT | VT_TINT2; /* __tint2：4-tryte/20-trit 档（C2 方案 A） */
+            goto basic_type;
+        case TOK_TBOOL:
+            /* __tbool：1-tryte Kleene 布尔（C2-c）——复用 VT_TINT 门语义，值域
+               0/1/2。VT_DEFSIGN 必带：plain char 在本目标无符号（char_is_unsigned
+               盖章 → LBU），__tbool 需有符号 LB 才能与 tint/tint2 同口径精确往返
+               （~0 = −1 词经 SB/LB 往返 = −1；无符号章则读回 +242）。 */
+            u = VT_BYTE | VT_DEFSIGN | VT_TINT;
             goto basic_type;
 #endif
         case TOK_INT:

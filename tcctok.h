@@ -58,6 +58,7 @@
 #ifdef TCC_TARGET_TRIRV
      DEF(TOK_TINT, "__tint")
      DEF(TOK_TINT2, "__tint2")
+     DEF(TOK_TBOOL, "__tbool")
 #endif
      DEF(TOK_STRUCT, "struct")
      DEF(TOK_UNION, "union")
