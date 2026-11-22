@@ -1082,6 +1082,9 @@ struct filespec {
                                           (only meaningful under TCC_TARGET_TRIRV; upstream
                                           BTYPE slots are full, so this follows the VT_LONG
                                           modifier pattern like long = VT_INT|VT_LONG) */
+#define VT_TINT2      0x00080000  /* TriRV: modifier with VT_INT — __tint2 4-tryte/20-trit 档
+                                          (2026-11-23 C2 方案 A：sizeof=4，存取 LW4/SW4，
+                                          寄存器内 int 语义 + mod 3^20 窄化；无 Kleene 门控) */
 #define VT_QLONG           13  /* 128-bit integer. Only used for x86-64 ABI */
 #define VT_QFLOAT          14  /* 128-bit float. Only used for x86-64 ABI */
 
@@ -1777,6 +1780,7 @@ ST_FUNC void gen_clear_cache(void);
 ST_FUNC int tri_output_file(TCCState *s1, const char *filename);
 ST_FUNC unsigned __int128 tri_tf45_raw(double v);   /* TF45 编码（init_putv 常量池用） */
 ST_FUNC void gen_cvt_tri_narrow(int bt, int uns);
+ST_FUNC void gen_cvt_tri_narrow20(void);   /* TriRV __tint2：mod 3^20 + 20-trit 符号扩展 */
 ST_FUNC void gen_opit(int op);                      /* __tint 二元运算分派 */
 ST_FUNC void gen_tnot(void);                        /* __tint 一元非 */   /* R 值窄化 mod-243/59049（gen_cast 用） */
 ST_FUNC void gen_opl(int op);

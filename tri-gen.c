@@ -361,6 +361,7 @@ static int tri_mem_funct(int size, int *ok)
     switch (size) {
     case 1: return 0;
     case 2: return 1;
+    case 4: return 3;   /* __tint2 档（C2 方案 A）：store 侧 funct（SW4）；load 侧在 load() 覆写为 5（LW4） */
     case 9: return 2;
     default: *ok = 0; return 0;
     }
@@ -480,6 +481,7 @@ ST_FUNC void load(int r, SValue *sv)
             unsigned funct_l = funct;
             if (size == 1) funct_l = (sv->type.t & VT_UNSIGNED) ? 3 : 0;  /* LBU/LB */
             else if (size == 2) funct_l = (sv->type.t & VT_UNSIGNED) ? 4 : 1; /* LHU/LH */
+            else if (size == 4) funct_l = 5;  /* LW4（__tint2 档）：20-trit 半阈值符号扩展 */
             o(TRI_ENC_I(TRI_OP_LOAD, fc, base, funct_l, rr));
         }
         return;
@@ -1038,6 +1040,29 @@ ST_FUNC void gen_cvt_tri_narrow(int bt, int uns)
         o(TRI_ENC_R(TRI_MUL_OP, TRI_MUL_FUNCT2, TRI_T0, TRI_T1, TRI_MUL_FUNCT, TRI_T1));
         o(TRI_ENC_R(TRI_SUB_OP, TRI_SUB_FUNCT2, TRI_T1, d, TRI_SUB_FUNCT, d));  /* d -= flag×mod */
     }
+}
+
+/* __tint2 寄存器值窄化（2026-11-23 C2 方案 A）：d = rr mod 3^20，再按 20-trit
+ * 半阈值符号扩展（(3^20-1)/2 = 1743392200，与 LW4 读回口径一致）。
+ * 3^20 = ADDI+SLLI 两槽（LUI imm13 装不下）；半阈值 = LUI 797161×3^7 − 6。 */
+ST_FUNC void gen_cvt_tri_narrow20(void)
+{
+    int rr = ireg(gv(RC_INT));
+    int d;
+    vtop--;
+    d = get_reg(RC_INT);
+    vtop++;
+    vtop->r = d;
+    d = ireg(d);
+    TRI_ADDI(TRI_T0, 0, 1);
+    o(TRI_ENC_I(TRI_OP_OPIMM, 20, TRI_T0, 4 /* SLLI */, TRI_T0));   /* t0 = 3^20 */
+    o(TRI_ENC_R(TRI_REMU_OP, TRI_REMU_FUNCT2, TRI_T0, rr, TRI_REMU_FUNCT, d)); /* d = rr mod 3^20 */
+    o(TRI_ENC_U(TRI_OP_LUI, 797161, TRI_T1));                       /* t1 = 1743392207 */
+    TRI_ADDI(TRI_T1, TRI_T1, -6);                                   /* t1 = 1743392201 = 半阈值+1 */
+    o(TRI_ENC_R(TRI_SLTU_OP, TRI_SLTU_FUNCT2, TRI_T1, d, TRI_SLTU_FUNCT, TRI_T1)); /* t1 = d<half */
+    TRI_SEQZ_NOT(TRI_T1);                                           /* t1 = d>=half（负） */
+    o(TRI_ENC_R(TRI_MUL_OP, TRI_MUL_FUNCT2, TRI_T0, TRI_T1, TRI_MUL_FUNCT, TRI_T1));
+    o(TRI_ENC_R(TRI_SUB_OP, TRI_SUB_FUNCT2, TRI_T1, d, TRI_SUB_FUNCT, d));  /* d -= flag×3^20 */
 }
 
 ST_FUNC void gen_cvt_ftof(int dt)

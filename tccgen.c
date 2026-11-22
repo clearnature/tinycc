@@ -2855,7 +2855,7 @@ static void type_to_str(char *buf, int buf_size,
         tstr = "short";
         goto add_tstr;
     case VT_INT:
-        tstr = (t & VT_TINT) ? "__tint" : "int";
+        tstr = (t & VT_TINT) ? "__tint" : (t & VT_TINT2) ? "__tint2" : "int";
         goto maybe_long;
     case VT_LLONG:
         tstr = "long long";
@@ -3511,7 +3511,10 @@ static void gen_cast(CType *type)
         sbt = VT_PTR;
 
 again:
-    if (sbt != dbt) {
+    /* TriRV：__tint2 与 int 同 BTYPE 槽（掩码后相等）但容器宽不同（4 vs 9
+       tryte）——修饰位有差异时必须进转换体，否则左值被静默重打类型后按
+       新容器宽读内存（(int)arr[1] 实证读 9 tryte 越槽界）。 */
+    if (sbt != dbt || ((vtop->type.t ^ type->t) & VT_TINT2)) {
         sf = is_float(sbt);
         df = is_float(dbt);
         dbt_bt = dbt & VT_BTYPE;
@@ -3670,6 +3673,27 @@ error:
         if (ds == 0 || ss == 0)
             goto error;
 
+#if defined TCC_TARGET_TRIRV
+        /* __tint2(4 tryte) 与 int(9 tryte) 同 BTYPE 槽（VT_INT|VT_TINT2）：
+           修饰位存在差异时，「同尺寸短路」与「左值重打类型」都不成立——
+           重打后按新容器宽读内存会越过 4-tryte 槽界（(int)arr[1] 实证读 9
+           tryte 带进垃圾）。显式分派：
+             tint2→int   ：物化（LW4 装载已 sx20，寄存器即正确 int 值）→ 无操作；
+             int→tint2   ：物化后 mod 3^20 窄化 + 20-trit 半阈值符号扩展；
+             tint2↔tint2 / 无 tint2：原路径。 */
+        if ((type->t & VT_TINT2) || (vtop->type.t & VT_TINT2)) {
+            if (!(vtop->type.t & VT_TINT2) && (type->t & VT_TINT2)) {
+                gv(RC_INT);
+                gen_cvt_tri_narrow20();
+                goto done;
+            }
+            if ((vtop->type.t & VT_TINT2) && !(type->t & VT_TINT2)) {
+                gv(RC_INT);            /* 左值按原类型装载（LW4），寄存器已正确 */
+                goto done;
+            }
+        }
+#endif
+
         /* same size and no sign conversion needed */
         if (ds == ss && ds >= 4)
             goto done;
@@ -3762,6 +3786,12 @@ error:
             gen_cvt_tri_narrow(dbt_bt, dbt & VT_UNSIGNED);
             goto done;
         }
+        /* __tint2（VT_INT|VT_TINT2）：寄存器值窄化 mod 3^20 + 20-trit 半阈值
+           符号扩展（2026-11-23 C2 方案 A）。须在下方 LLONG→INT 无操作分支之前截走。 */
+        if (dbt_bt == VT_INT && (dbt & VT_TINT2)) {
+            gen_cvt_tri_narrow20();
+            goto done;
+        }
 #endif
 #if defined TCC_TARGET_TRIRV
         if (dbt_bt == VT_INT && ss == 8) {
@@ -3832,6 +3862,7 @@ ST_FUNC int type_size(CType *type, int *a)
         return 8;
     } else if (bt == VT_INT || bt == VT_FLOAT) {
 #ifdef TCC_TARGET_TRIRV
+        if (bt == VT_INT && (type->t & VT_TINT2)) { *a = 4; return 4; }  /* __tint2 = 4 tryte（C2 方案 A），4-对齐 */
         *a = 9; return 9;    /* int/float = 45 trit = 9 tryte，9-对齐（ABI §4：
                                 char 占 1，其余占 9；成员起始一律 9-对齐） */
 #endif
@@ -4704,6 +4735,7 @@ static void struct_layout(CType *type, AttributeDef *ad)
     int packed, a, bt, prevbt, prev_bit_size;
     int pcc = !tcc_state->ms_bitfields;
     int pragma_pack = *tcc_state->pack_stack_ptr;
+    int has_t2 = 0;   /* 结构体含 __tint2 成员（2026-11-23 C2 方案 A：4-对齐布局档） */
     Sym *f;
 
     maxalign = 1;
@@ -4723,6 +4755,8 @@ static void struct_layout(CType *type, AttributeDef *ad)
         size = type_size(&f->type, &align);
         a = f->a.aligned ? 1 << (f->a.aligned - 1) : 0;
         packed = 0;
+        if (f->type.t & VT_TINT2)
+            has_t2 = 1;
 
         /* An alignas specifier may only increase the alignment (C23 6.7.5);
            __attribute__((aligned(N))) is allowed to lower it, so only the
@@ -4764,7 +4798,12 @@ static void struct_layout(CType *type, AttributeDef *ad)
             if (pcc)
                 c += (bit_pos + 7) >> 3;
 #ifdef TCC_TARGET_TRIRV
-	    c = TRI_ALIGN_UP(c, 9);            /* ABI §6：成员起始一律 9-对齐 */
+	    /* __tint2（2026-11-23 C2 方案 A）：新档 4-tryte 按自身 4-对齐布局
+	       （无历史结构体包袱）；其余成员仍一律 9-对齐（ABI §6）。 */
+	    if (f->type.t & VT_TINT2)
+	      c = TRI_ALIGN_UP(c, align);
+	    else
+	      c = TRI_ALIGN_UP(c, 9);            /* ABI §6：成员起始一律 9-对齐 */
 #else
 	    c = (c + align - 1) & -align;
 #endif
@@ -4882,7 +4921,9 @@ static void struct_layout(CType *type, AttributeDef *ad)
             a = bt;
     }
 #ifdef TCC_TARGET_TRIRV
-    c = TRI_ALIGN_UP(c, 9);                /* 尺寸 9-圆整（trirv_cc struct_def 同款） */
+    /* 尺寸 9-圆整（trirv_cc struct_def 同款）；含 __tint2 成员的结构体按自身
+       maxalign 圆整（新档 4-对齐，无历史布局） */
+    c = TRI_ALIGN_UP(c, has_t2 ? maxalign : 9);
 #else
     c = (c + a - 1) & -a;
 #endif
@@ -5306,6 +5347,9 @@ static int parse_btype(CType *type, AttributeDef *ad, int ignore_label)
 #ifdef TCC_TARGET_TRIRV
         case TOK_TINT:
             u = VT_INT | VT_TINT; /* long 模式同构：修饰位随 VT_INT 进 bt 槽 */
+            goto basic_type;
+        case TOK_TINT2:
+            u = VT_INT | VT_TINT2; /* __tint2：4-tryte/20-trit 档（C2 方案 A） */
             goto basic_type;
 #endif
         case TOK_INT:
@@ -9047,6 +9091,13 @@ static void tri_write_short10(unsigned char *ptr, int64_t val)
     ptr[0] = (unsigned char)(v % 243);
     ptr[1] = (unsigned char)((v / 243) % 243);
 }
+/* __tint2 = 4 tryte = 20 trit，回绕在 3^20=3486784401（2026-11-23 C2 方案 A） */
+static void tri_write_tint2(unsigned char *ptr, int64_t val)
+{
+    unsigned __int128 v = (unsigned __int128)(((val % 3486784401LL) + 3486784401LL) % 3486784401LL);
+    int k;
+    for (k = 0; k < 4; k++) { ptr[k] = (unsigned char)(v % 243); v /= 243; }
+}
 #endif
 
 /* store a value or an expression directly in global data or in local array */
@@ -9209,7 +9260,10 @@ static void init_putv(init_params *p, CType *type, unsigned long c)
 	        break;
             case VT_INT:
 #if defined TCC_TARGET_TRIRV
-                tri_write_word45(ptr, val);
+                if (type->t & VT_TINT2)
+                  tri_write_tint2(ptr, val);   /* __tint2：4 tryte，mod 3^20（C2 方案 A） */
+                else
+                  tri_write_word45(ptr, val);
 #else
                 write32le(ptr, val);
 #endif
