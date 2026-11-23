@@ -59,6 +59,7 @@
      DEF(TOK_TINT, "__tint")
      DEF(TOK_TINT2, "__tint2")
      DEF(TOK_TBOOL, "__tbool")
+     DEF(TOK_builtin_tri_lit, "__builtin_tri_lit")
 #endif
      DEF(TOK_STRUCT, "struct")
      DEF(TOK_UNION, "union")

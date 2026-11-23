@@ -1042,6 +1042,27 @@ ST_FUNC void gen_cvt_tri_narrow(int bt, int uns)
     }
 }
 
+/* __builtin_tri_lit(x, a)：Post 文字运算直发（§6.1，2026-11-23 内建拍板）。
+ * a 编译期常量 0..2 → LIT0/LIT1/LIT2（R 型，rs2=0 忽略）；超界诚实报错。
+ * 结果类型同 x（词级 int 语义，寄存器驻留）。 */
+ST_FUNC void gen_builtin_tri_lit(int a)
+{
+    int rr, d;
+    if (a < 0 || a > 2)
+      tcc_error("TriRV: __builtin_tri_lit expects constant a in 0..2");
+    rr = ireg(gv(RC_INT));
+    vtop--;
+    d = get_reg(RC_INT);
+    vtop++;
+    vtop->r = d;
+    if (a == 0)
+      o(TRI_ENC_R(TRI_LIT0_OP, TRI_LIT0_FUNCT2, 0, rr, TRI_LIT0_FUNCT, ireg(d)));
+    else if (a == 1)
+      o(TRI_ENC_R(TRI_LIT1_OP, TRI_LIT1_FUNCT2, 0, rr, TRI_LIT1_FUNCT, ireg(d)));
+    else
+      o(TRI_ENC_R(TRI_LIT2_OP, TRI_LIT2_FUNCT2, 0, rr, TRI_LIT2_FUNCT, ireg(d)));
+}
+
 /* __tint2 寄存器值窄化（2026-11-23 C2 方案 A）：d = rr mod 3^20，再按 20-trit
  * 半阈值符号扩展（(3^20-1)/2 = 1743392200，与 LW4 读回口径一致）。
  * 3^20 = ADDI+SLLI 两槽（LUI imm13 装不下）；半阈值 = LUI 797161×3^7 − 6。 */

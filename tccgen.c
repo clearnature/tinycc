@@ -7050,6 +7050,18 @@ ST_FUNC void unary(void)
             }
         }
         break;
+#ifdef TCC_TARGET_TRIRV
+    case TOK_builtin_tri_lit:
+        /* __builtin_tri_lit(x, a)：Post 文字运算 x^a（§6.1）。a 编译期常量
+           0..2，直发 LIT0/1/2；非常量/超界诚实报错。结果类型同 x。 */
+        next();
+        skip('(');
+        expr_eq();          /* 单表达式（gexpr 含逗号层级，会吞掉 `, a`——实证） */
+        skip(',');
+        gen_builtin_tri_lit(expr_const());
+        skip(')');
+        break;
+#endif
 #ifdef TCC_TARGET_RISCV64
     case TOK_builtin_va_start:
         parse_builtin_params(0, "ee");

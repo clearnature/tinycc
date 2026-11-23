@@ -1781,6 +1781,7 @@ ST_FUNC int tri_output_file(TCCState *s1, const char *filename);
 ST_FUNC unsigned __int128 tri_tf45_raw(double v);   /* TF45 编码（init_putv 常量池用） */
 ST_FUNC void gen_cvt_tri_narrow(int bt, int uns);
 ST_FUNC void gen_cvt_tri_narrow20(void);   /* TriRV __tint2：mod 3^20 + 20-trit 符号扩展 */
+ST_FUNC void gen_builtin_tri_lit(int a);   /* TriRV __builtin_tri_lit(x,a)：Post 文字运算直发 */
 ST_FUNC void gen_opit(int op);                      /* __tint 二元运算分派 */
 ST_FUNC void gen_tnot(void);                        /* __tint 一元非 */   /* R 值窄化 mod-243/59049（gen_cast 用） */
 ST_FUNC void gen_opl(int op);
